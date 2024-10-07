@@ -1,0 +1,9 @@
+packages:
+  github.com/authorhealth/events:
+    config:
+      all: true
+      dir: "{{ .InterfaceDir }}"
+      filename: "mock_{{ .InterfaceNameSnake }}.go"
+      inpackage: true
+      recursive: true
+      with-expecter: true
