@@ -1,0 +1,28 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build:
+    permissions:
+      contents: "read"
+
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: "./go.mod"
+          cache: true
+          cache-dependency-path: |
+            go.sum
+
+      - run: go version
+
+      - name: Test
+        run: go test -v -race ./...

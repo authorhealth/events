@@ -1,0 +1,6 @@
+{
+  "files.exclude": {
+    "**/mock_*.go": true
+  },
+  "go.testEnvFile": "${workspaceFolder}/.env"
+}
