@@ -30,8 +30,10 @@ jobs:
           cache: true
 
       - name: Go generate
+        shell: bash
         run: |-
-          curl -L https://github.com/vektra/mockery/releases/download/${MOCKERY_VERSION:1}/mockery_${MOCKERY_VERSION}_Linux_x86_64.tar.gz -o mockery.tar.gz && \
+          echo "mockery version: ${MOCKERY_VERSION}"
+          curl -L https://github.com/vektra/mockery/releases/download/${MOCKERY_VERSION}/mockery_${MOCKERY_VERSION:1}_Linux_x86_64.tar.gz -o mockery.tar.gz && \
             tar xvzf mockery.tar.gz mockery && \
             mv mockery /usr/local/bin
           go generate ./...
