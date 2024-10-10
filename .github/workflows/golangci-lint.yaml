@@ -10,11 +10,17 @@ permissions:
   contents: read
   # Optional: allow read access to pull request. Use with `only-new-issues` option.
   pull-requests: read
+  # Optional: allow write access to checks to allow the action to annotate code in the PR.
+  checks: write
+
+env:
+  GOLANGCI_LINT_VERSION: v1.60.1
+  MOCKERY_RELEASE: v2.46.2
 
 jobs:
   golangci:
     name: lint
-    runs-on: large
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -22,14 +28,13 @@ jobs:
         with:
           go-version-file: './go.mod'
           cache: true
-          cache-dependency-path: |
-            go.sum
 
       - name: Go generate
+        shell: bash
         run: |-
-          curl -L https://github.com/vektra/mockery/releases/download/v2.46.1/mockery_2.46.1_Linux_x86_64.tar.gz -o mockery.tar.gz && \
-            tar xvzf mockery.tar.gz mockery && \
-            rm mockery.tar.gz && \
+          echo "mockery version: ${MOCKERY_RELEASE}"
+          curl -sSL https://github.com/vektra/mockery/releases/download/${MOCKERY_RELEASE}/mockery_${MOCKERY_RELEASE:1}_Linux_x86_64.tar.gz | \
+            tar xvzf - mockery
             mv mockery /usr/local/bin
           go generate ./...
 
@@ -39,7 +44,7 @@ jobs:
           # Require: The version of golangci-lint to use.
           # When `install-mode` is `binary` (default) the value can be v1.2 or v1.2.3 or `latest` to use the latest version.
           # When `install-mode` is `goinstall` the value can be v1.2.3, `latest`, or the hash of a commit.
-          version: v1.61.0
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
 
           # Optional: working directory, useful for monorepos
           # working-directory: somedir
@@ -55,7 +60,7 @@ jobs:
 
           # Optional: if set to true, then all caching functionality will be completely disabled,
           #           takes precedence over all other caching options.
-          skip-cache: true
+          skip-cache: false
 
           # Optional: The mode to install golangci-lint. It can be 'binary' or 'goinstall'.
           # install-mode: "goinstall"
