@@ -29,13 +29,20 @@ jobs:
           go-version-file: './go.mod'
           cache: true
 
-      - name: Go generate
+      - name: Download Mockery
         shell: bash
+        env:
+          BASE_URL: "https://github.com/vektra/mockery/releases/download/${{ env.MOCKERY_RELEASE }}"
         run: |-
-          echo "mockery version: ${MOCKERY_RELEASE}"
-          curl -sSL https://github.com/vektra/mockery/releases/download/${MOCKERY_RELEASE}/mockery_${MOCKERY_RELEASE:1}_Linux_x86_64.tar.gz | \
-            tar xvzf - mockery
+          FILE="mockery_${MOCKERY_RELEASE:1}_Linux_x86_64.tar.gz"
+          URL="${BASE_URL}/${FILE}"
+          echo "Downloading Mockery ${MOCKERY_RELEASE} from ${URL}"
+          curl -sSLO "${URL}"
+          tar xvzf "${FILE}" mockery
             mv mockery /usr/local/bin
+
+      - name: Generate Mocks
+        run:
           go generate ./...
 
       - name: golangci-lint
