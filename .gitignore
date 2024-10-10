@@ -2,3 +2,4 @@
 mock_*.go
 .DS_Store
 .vscode/extensions.json
+playground/
