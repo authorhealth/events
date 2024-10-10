@@ -15,7 +15,7 @@ permissions:
 
 env:
   GOLANGCI_LINT_VERSION: v1.60.1
-  MOCKERY_VERSION: v2.46.2
+  MOCKERY_RELEASE: v2.46.2
 
 jobs:
   golangci:
@@ -32,8 +32,8 @@ jobs:
       - name: Go generate
         shell: bash
         run: |-
-          echo "mockery version: ${MOCKERY_VERSION}"
-          curl -sSL https://github.com/vektra/mockery/releases/download/${MOCKERY_VERSION}/mockery_${MOCKERY_VERSION:1}_Linux_x86_64.tar.gz | \
+          echo "mockery version: ${MOCKERY_RELEASE}"
+          curl -sSL https://github.com/vektra/mockery/releases/download/${MOCKERY_RELEASE}/mockery_${MOCKERY_RELEASE:1}_Linux_x86_64.tar.gz | \
             tar xvzf - mockery
             mv mockery /usr/local/bin
           go generate ./...
