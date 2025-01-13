@@ -24,8 +24,13 @@ const (
 
 var ErrRetryable = errors.New("event failed to process but is retryable")
 
+// BackoffFunc is a function that determines the time at which the given event
+// should be retried after it has failed to process. The time should be in
+// the future.
 type BackoffFunc func(event *Event) time.Time
 
+// DefaultBackoffFunc is an implementation of BackoffFunc that uses an
+// exponential backoff strategy with randomized jitter.
 func DefaultBackoffFunc(event *Event) time.Time {
 	duration := time.Second * time.Duration(event.Errors*2) * time.Duration(rand.IntN(45)+15)
 	backoffUntil := time.Now().Add(duration)
@@ -35,8 +40,25 @@ func DefaultBackoffFunc(event *Event) time.Time {
 
 var _ BackoffFunc = DefaultBackoffFunc
 
+// BeforeProcessHook is a function that is called before an event is processed.
+// It can be used to modify the given context or event before it is processed.
+// If an error is returned, the event will not be processed.
 type BeforeProcessHook func(context.Context, *Event) (context.Context, *Event, error)
 
+// Processor provides a way to process events from a Repository.
+// It uses a configurable number of worker goroutines to process events concurrently.
+// Before processing, a BeforeProcessHook can be used to modify the event or context.
+// The Processor also provides metrics for monitoring the processing of events.
+//
+// The Processor starts by retrieving unprocessed events from the Repository.
+// For each event, it acquires a worker from a pool of workers. If no worker is available, it waits until one becomes available.
+// Once a worker is acquired, the event is processed. After processing, the worker is released back to the pool.
+//
+// The processing of an event involves running a set of handlers defined in the ConfigMap.
+// If any handler returns an error, the event is marked as failed.
+// If all handlers complete successfully, the event is marked as processed.
+//
+// The Processor also provides a Shutdown method to gracefully stop processing events.
 type Processor struct {
 	beforeProcessHook          BeforeProcessHook
 	configMap                  ConfigMap
@@ -56,6 +78,22 @@ type Processor struct {
 	unprocessedMaxAgeGauge     metric.Float64ObservableGauge
 }
 
+// NewProcessor creates a new event processor.
+//
+// repo is the repository used to store and retrieve events.
+//
+// conf is a map of event names to configurations. If an event is encountered
+// during processing with an event name that is not present in the map, a
+// warning will be logged, and the event will be marked as processed.
+//
+// beforeProcessHook is an optional hook that is called before each event
+// is processed.
+//
+// telemetryPrefix is used to prefix all metric names. This can be used to
+// prevent metric name collisions between different applications.
+//
+// numProcessorWorkers configures the number of worker goroutines that process
+// eventsy. If numProcessorWorkers is <= 0, it defaults to 2.
 func NewProcessor(
 	repo Repository,
 	conf ConfigMap,

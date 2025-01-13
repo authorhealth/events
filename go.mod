@@ -1,4 +1,4 @@
-module github.com/authorhealth/events
+module github.com/authorhealth/events/v2
 
 go 1.23.2
 
