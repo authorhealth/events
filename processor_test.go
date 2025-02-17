@@ -2,7 +2,6 @@ package events
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -12,8 +11,6 @@ import (
 	mock "github.com/stretchr/testify/mock"
 )
 
-var ctxMatcher = mock.MatchedBy(func(c context.Context) bool { return true })
-
 func TestProcessor(t *testing.T) {
 	assert := assert.New(t)
 
@@ -22,11 +19,11 @@ func TestProcessor(t *testing.T) {
 
 	entityID := uuid.New().String()
 
-	fooUpdatedEvent, err := NewApplicationEvent("fooUpdated", map[string]any{"key": "val"})
+	fooUpdatedEvent, err := NewApplicationEvent(fooUpdatedEventName, map[string]any{"key": "val"})
 	assert.NoError(err)
 	fooUpdatedEvent.EntityID = &entityID
 
-	barUpdatedEvent, err := NewApplicationEvent("barUpdated", map[string]any{"key": "val"})
+	barUpdatedEvent, err := NewApplicationEvent(barUpdatedEventName, map[string]any{"key": "val"})
 	assert.NoError(err)
 	barUpdatedEvent.EntityID = &entityID
 
@@ -35,61 +32,63 @@ func TestProcessor(t *testing.T) {
 		barUpdatedEvent,
 	}
 
-	eventRepo := NewMockRepository(t)
-
-	eventRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.Repository) error")).RunAndReturn(func(ctx context.Context, f func(Repository) error) error {
-		err := f(eventRepo)
-		assert.NoError(err)
-
-		return nil
-	})
-
-	eventRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.Repository) error")).RunAndReturn(func(ctx context.Context, f func(Repository) error) error {
-		err := f(eventRepo)
-		assert.NoError(err)
-
-		return nil
-	})
-
-	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return(events, nil).Once()
-	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return([]*Event{}, nil)
-
-	eventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedEvent.ID, true).Return(fooUpdatedEvent, nil).Once()
-	eventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, barUpdatedEvent.ID, true).Return(barUpdatedEvent, nil).Once()
-
 	var wg sync.WaitGroup
 	wg.Add(len(events))
 
-	eventRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(e *Event) bool {
-		return e.ID == fooUpdatedEvent.ID
+	txEventRepo := NewMockEventRepository(t)
+	txEventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedEvent.ID, true).Return(fooUpdatedEvent, nil).Once()
+	txEventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, barUpdatedEvent.ID, true).Return(barUpdatedEvent, nil).Once()
+	txEventRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(e *Event) bool {
+		return e.ID == fooUpdatedEvent.ID &&
+			assert.NotNil(e.ProcessedAt)
+	})).RunAndReturn(func(ctx context.Context, e *Event) error {
+		wg.Done()
+		return nil
+	}).Once()
+	txEventRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(e *Event) bool {
+		return e.ID == barUpdatedEvent.ID &&
+			assert.NotNil(e.ProcessedAt)
 	})).RunAndReturn(func(ctx context.Context, e *Event) error {
 		wg.Done()
 		return nil
 	}).Once()
 
-	eventRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(e *Event) bool {
-		return e.ID == barUpdatedEvent.ID
-	})).RunAndReturn(func(ctx context.Context, e *Event) error {
-		wg.Done()
-		return nil
-	}).Once()
-	fooSuccessHandler := NewHandler("success", "", func(ctx context.Context, e *Event) error {
+	eventRepo := NewMockEventRepository(t)
+	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return(events, nil).Once()
+	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return([]*Event{}, nil).Maybe()
+	eventRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.EventRepository) error")).RunAndReturn(func(ctx context.Context, f func(EventRepository) error) error {
+		return f(txEventRepo)
+	})
+
+	txHandlerRequestRepo := NewMockHandlerRequestRepository(t)
+	txHandlerRequestRepo.EXPECT().Create(ctxMatcher, mock.MatchedBy(func(r *HandlerRequest) bool {
+		return r.EventID == fooUpdatedEvent.ID
+	})).Return(nil).Once()
+	txHandlerRequestRepo.EXPECT().Create(ctxMatcher, mock.MatchedBy(func(r *HandlerRequest) bool {
+		return r.EventID == barUpdatedEvent.ID
+	})).Return(nil).Once()
+
+	handlerRequestRepo := NewMockHandlerRequestRepository(t)
+	handlerRequestRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.HandlerRequestRepository) error")).RunAndReturn(func(ctx context.Context, f func(HandlerRequestRepository) error) error {
+		return f(txHandlerRequestRepo)
+	}).Twice()
+
+	fooUpdatedHandler := NewHandler(fooUpdatedHandlerName, "", func(ctx context.Context, r *HandlerRequest) error {
+		assert.Fail("should not be called")
 		return nil
 	})
 
-	barSuccessHandler := NewHandler("success", "", func(ctx context.Context, e *Event) error {
+	barUpdatedHandler := NewHandler(barUpdatedHandlerName, "", func(ctx context.Context, r *HandlerRequest) error {
+		assert.Fail("should not be called")
 		return nil
 	})
 
-	barFailureHandler := NewHandler("failure", "", func(ctx context.Context, e *Event) error {
-		return errors.New("handler error")
-	})
+	eventMap := NewConfigMap(
+		WithEvent(fooUpdatedEventName, WithHandler(fooUpdatedHandler)),
+		WithEvent(barUpdatedEventName, WithHandler(barUpdatedHandler)),
+	)
 
-	eventMap := ConfigMap{}
-	eventMap.AddHandlers("fooUpdated", fooSuccessHandler)
-	eventMap.AddHandlers("barUpdated", barSuccessHandler, barFailureHandler)
-
-	p, err := NewProcessor(eventRepo, eventMap, nil, "", 2)
+	p, err := NewProcessor(eventRepo, handlerRequestRepo, eventMap, nil, "", 2)
 	assert.NoError(err)
 
 	go func() {
@@ -102,13 +101,6 @@ func TestProcessor(t *testing.T) {
 	err = p.Shutdown(context.Background())
 	assert.NoError(err)
 
-	assert.NotNil(fooUpdatedEvent.ProcessedAt)
-
-	assert.Nil(barUpdatedEvent.ProcessedAt)
-	assert.NotNil(barUpdatedEvent.HandlerResults["success"].ProcessedAt)
-
-	assert.Nil(barUpdatedEvent.HandlerResults["failure"].ProcessedAt)
-	assert.Error(barUpdatedEvent.HandlerResults["failure"].LastError)
 }
 
 func TestProcessor_not_found(t *testing.T) {
@@ -120,49 +112,46 @@ func TestProcessor_not_found(t *testing.T) {
 	entityID := uuid.New().String()
 
 	fooUpdatedEvent := &Event{
-		ID:             uuid.New().String(),
-		Type:           "fooUpdated",
-		EntityID:       &entityID,
-		Data:           map[string]any{"key": "val"},
-		Timestamp:      time.Now(),
-		ProcessedAt:    nil,
-		HandlerResults: map[HandlerName]*HandlerResult{},
+		ID:          uuid.New().String(),
+		Name:        "fooUpdated",
+		EntityID:    &entityID,
+		Data:        map[string]any{"key": "val"},
+		Timestamp:   time.Now(),
+		ProcessedAt: nil,
 	}
 
 	events := []*Event{
 		fooUpdatedEvent,
 	}
 
-	eventRepo := NewMockRepository(t)
-
-	eventRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.Repository) error")).RunAndReturn(func(ctx context.Context, f func(Repository) error) error {
-		err := f(eventRepo)
-		assert.NoError(err)
-
-		return nil
-	})
-
-	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return(events, nil).Once()
-	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return([]*Event{}, nil)
-
 	var wg sync.WaitGroup
+	wg.Add(len(events))
 
-	wg.Add(1)
-	eventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedEvent.ID, true).RunAndReturn(func(ctx context.Context, id string, b bool) (*Event, error) {
+	txEventRepo := NewMockEventRepository(t)
+	txEventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedEvent.ID, true).RunAndReturn(func(ctx context.Context, _ string, _ bool) (*Event, error) {
 		wg.Done()
 		return nil, ErrNotFound
 	})
 
-	handlerCalled := false
-	fooSuccessHandler := NewHandler("success", "", func(ctx context.Context, e *Event) error {
-		handlerCalled = true
+	eventRepo := NewMockEventRepository(t)
+	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return(events, nil).Once()
+	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return([]*Event{}, nil).Maybe()
+	eventRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.EventRepository) error")).RunAndReturn(func(ctx context.Context, f func(EventRepository) error) error {
+		return f(txEventRepo)
+	})
+
+	handlerRequestRepo := NewMockHandlerRequestRepository(t)
+
+	fooUpdatedHandler := NewHandler(fooUpdatedHandlerName, "", func(ctx context.Context, r *HandlerRequest) error {
+		assert.Fail("should not be called")
 		return nil
 	})
 
-	eventMap := ConfigMap{}
-	eventMap.AddHandlers("fooUpdated", fooSuccessHandler)
+	eventMap := NewConfigMap(
+		WithEvent(fooUpdatedEventName, WithHandler(fooUpdatedHandler)),
+	)
 
-	p, err := NewProcessor(eventRepo, eventMap, nil, "", 2)
+	p, err := NewProcessor(eventRepo, handlerRequestRepo, eventMap, nil, "", 2)
 	assert.NoError(err)
 
 	go func() {
@@ -174,9 +163,6 @@ func TestProcessor_not_found(t *testing.T) {
 
 	err = p.Shutdown(context.Background())
 	assert.NoError(err)
-
-	assert.Nil(fooUpdatedEvent.ProcessedAt)
-	assert.False(handlerCalled)
 }
 
 func TestProcessor_already_processed(t *testing.T) {
@@ -189,49 +175,46 @@ func TestProcessor_already_processed(t *testing.T) {
 
 	now := time.Now()
 	fooUpdatedEvent := &Event{
-		ID:             uuid.New().String(),
-		Type:           "fooUpdated",
-		EntityID:       &entityID,
-		Data:           map[string]any{"key": "val"},
-		Timestamp:      now,
-		ProcessedAt:    &now,
-		HandlerResults: map[HandlerName]*HandlerResult{},
+		ID:          uuid.New().String(),
+		Name:        "fooUpdated",
+		EntityID:    &entityID,
+		Data:        map[string]any{"key": "val"},
+		Timestamp:   now,
+		ProcessedAt: &now,
 	}
 
 	events := []*Event{
 		fooUpdatedEvent,
 	}
 
-	eventRepo := NewMockRepository(t)
-
-	eventRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.Repository) error")).RunAndReturn(func(ctx context.Context, f func(Repository) error) error {
-		err := f(eventRepo)
-		assert.NoError(err)
-
-		return nil
-	})
-
-	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return(events, nil).Once()
-	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return([]*Event{}, nil)
-
 	var wg sync.WaitGroup
+	wg.Add(len(events))
 
-	wg.Add(1)
-	eventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedEvent.ID, true).RunAndReturn(func(ctx context.Context, id string, b bool) (*Event, error) {
+	txEventRepo := NewMockEventRepository(t)
+	txEventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedEvent.ID, true).RunAndReturn(func(ctx context.Context, _ string, _ bool) (*Event, error) {
 		wg.Done()
 		return fooUpdatedEvent, nil
 	})
 
-	handlerCalled := false
-	fooSuccessHandler := NewHandler("success", "", func(ctx context.Context, e *Event) error {
-		handlerCalled = true
+	eventRepo := NewMockEventRepository(t)
+	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return(events, nil).Once()
+	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return([]*Event{}, nil).Maybe()
+	eventRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.EventRepository) error")).RunAndReturn(func(ctx context.Context, f func(EventRepository) error) error {
+		return f(txEventRepo)
+	})
+
+	handlerRequestRepo := NewMockHandlerRequestRepository(t)
+
+	fooUpdatedHandler := NewHandler(fooUpdatedHandlerName, "", func(ctx context.Context, r *HandlerRequest) error {
+		assert.Fail("should not be called")
 		return nil
 	})
 
-	eventMap := ConfigMap{}
-	eventMap.AddHandlers("fooUpdated", fooSuccessHandler)
+	eventMap := NewConfigMap(
+		WithEvent(fooUpdatedEventName, WithHandler(fooUpdatedHandler)),
+	)
 
-	p, err := NewProcessor(eventRepo, eventMap, nil, "", 2)
+	p, err := NewProcessor(eventRepo, handlerRequestRepo, eventMap, nil, "", 2)
 	assert.NoError(err)
 
 	go func() {
@@ -243,8 +226,6 @@ func TestProcessor_already_processed(t *testing.T) {
 
 	err = p.Shutdown(context.Background())
 	assert.NoError(err)
-
-	assert.False(handlerCalled)
 }
 
 func TestProcessor_no_handler(t *testing.T) {
@@ -263,40 +244,31 @@ func TestProcessor_no_handler(t *testing.T) {
 		fooUpdatedEvent,
 	}
 
-	eventRepo := NewMockRepository(t)
-
-	eventRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.Repository) error")).RunAndReturn(func(ctx context.Context, f func(Repository) error) error {
-		err := f(eventRepo)
-		assert.NoError(err)
-
-		return nil
-	})
-
-	eventRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.Repository) error")).RunAndReturn(func(ctx context.Context, f func(Repository) error) error {
-		err := f(eventRepo)
-		assert.NoError(err)
-
-		return nil
-	})
-
-	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return(events, nil).Once()
-	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return([]*Event{}, nil)
-
-	eventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedEvent.ID, true).Return(fooUpdatedEvent, nil).Once()
-
 	var wg sync.WaitGroup
 	wg.Add(len(events))
 
-	eventRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(e *Event) bool {
-		return e.ID == fooUpdatedEvent.ID
+	txEventRepo := NewMockEventRepository(t)
+	txEventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedEvent.ID, true).Return(fooUpdatedEvent, nil).Once()
+	txEventRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(e *Event) bool {
+		return e.ID == fooUpdatedEvent.ID &&
+			assert.NotNil(e.ProcessedAt)
 	})).RunAndReturn(func(ctx context.Context, e *Event) error {
 		wg.Done()
 		return nil
 	}).Once()
 
+	eventRepo := NewMockEventRepository(t)
+	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return(events, nil).Once()
+	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return([]*Event{}, nil).Maybe()
+	eventRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.EventRepository) error")).RunAndReturn(func(ctx context.Context, f func(EventRepository) error) error {
+		return f(txEventRepo)
+	})
+
+	handlerRequestRepo := NewMockHandlerRequestRepository(t)
+
 	eventMap := ConfigMap{}
 
-	p, err := NewProcessor(eventRepo, eventMap, nil, "", 2)
+	p, err := NewProcessor(eventRepo, handlerRequestRepo, eventMap, nil, "", 2)
 	assert.NoError(err)
 
 	go func() {
@@ -308,6 +280,4 @@ func TestProcessor_no_handler(t *testing.T) {
 
 	err = p.Shutdown(context.Background())
 	assert.NoError(err)
-
-	assert.NotNil(fooUpdatedEvent.ProcessedAt)
 }

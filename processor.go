@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"sync"
 	"time"
 
+	"github.com/avast/retry-go/v4"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -17,35 +17,17 @@ import (
 )
 
 const (
-	MaxEventErrors = 5
-
-	defaultNumProcessorWorkers = 2
+	defaultNumProcessorWorkers = 1
 )
 
 var ErrRetryable = errors.New("event failed to process but is retryable")
-
-// BackoffFunc is a function that determines the time at which the given event
-// should be retried after it has failed to process. The time should be in
-// the future.
-type BackoffFunc func(event *Event) time.Time
-
-// DefaultBackoffFunc is an implementation of BackoffFunc that uses an
-// exponential backoff strategy with randomized jitter.
-func DefaultBackoffFunc(event *Event) time.Time {
-	duration := time.Second * time.Duration(event.Errors*2) * time.Duration(rand.IntN(45)+15)
-	backoffUntil := time.Now().Add(duration)
-
-	return backoffUntil
-}
-
-var _ BackoffFunc = DefaultBackoffFunc
 
 // BeforeProcessHook is a function that is called before an event is processed.
 // It can be used to modify the given context or event before it is processed.
 // If an error is returned, the event will not be processed.
 type BeforeProcessHook func(context.Context, *Event) (context.Context, *Event, error)
 
-// Processor provides a way to process events from a Repository.
+// Processor provides a way to process events from an EventRepository.
 // It uses a configurable number of worker goroutines to process events concurrently.
 // Before processing, a BeforeProcessHook can be used to modify the event or context.
 // The Processor also provides metrics for monitoring the processing of events.
@@ -62,13 +44,13 @@ type BeforeProcessHook func(context.Context, *Event) (context.Context, *Event, e
 type Processor struct {
 	beforeProcessHook          BeforeProcessHook
 	configMap                  ConfigMap
-	deadCountGauge             metric.Int64ObservableGauge
 	done                       chan bool
+	eventRepo                  EventRepository
 	failureCounter             metric.Int64Counter
 	meter                      metric.Meter
 	meterCallbackRegistrations []metric.Registration
 	numProcessorWorkers        int
-	repo                       Repository
+	handlerRequestRepo         HandlerRequestRepository
 	shutdown                   chan bool
 	successCounter             metric.Int64Counter
 	telemetryPrefix            string
@@ -93,9 +75,10 @@ type Processor struct {
 // prevent metric name collisions between different applications.
 //
 // numProcessorWorkers configures the number of worker goroutines that process
-// eventsy. If numProcessorWorkers is <= 0, it defaults to 2.
+// events. If numProcessorWorkers is <= 0, it defaults to 2.
 func NewProcessor(
-	repo Repository,
+	eventRepo EventRepository,
+	handlerRequestRepo HandlerRequestRepository,
 	conf ConfigMap,
 	beforeProcessHook BeforeProcessHook,
 	telemetryPrefix string,
@@ -109,12 +92,13 @@ func NewProcessor(
 		beforeProcessHook:   beforeProcessHook,
 		configMap:           conf,
 		done:                make(chan bool, 1),
-		meter:               otel.GetMeterProvider().Meter("github.com/authorhealth/events"),
+		eventRepo:           eventRepo,
+		handlerRequestRepo:  handlerRequestRepo,
+		meter:               otel.GetMeterProvider().Meter("github.com/authorhealth/events/v2"),
 		numProcessorWorkers: numProcessorWorkers,
-		repo:                repo,
-		telemetryPrefix:     telemetryPrefix,
 		shutdown:            make(chan bool, 1),
-		tracer:              otel.GetTracerProvider().Tracer("github.com/authorhealth/events"),
+		telemetryPrefix:     telemetryPrefix,
+		tracer:              otel.GetTracerProvider().Tracer("github.com/authorhealth/events/v2"),
 	}
 
 	var err error
@@ -157,14 +141,6 @@ func NewProcessor(
 		metric.WithUnit("s"))
 	if err != nil {
 		return nil, fmt.Errorf("constructing max unprocessed event age gauge: %w", err)
-	}
-
-	p.deadCountGauge, err = p.meter.Int64ObservableGauge(
-		p.applyTelemetryPrefix("events.dead.count"),
-		metric.WithDescription("The number of dead events in the queue."),
-		metric.WithUnit("{event}"))
-	if err != nil {
-		return nil, fmt.Errorf("constructing dead event count gauge: %w", err)
 	}
 
 	return p, nil
@@ -213,7 +189,7 @@ func (p *Processor) processEvents(ctx context.Context, limit int) {
 	ctx, span := p.tracer.Start(ctx, "process events")
 	defer span.End()
 
-	events, err := p.repo.FindUnprocessed(ctx, limit)
+	events, err := p.eventRepo.FindUnprocessed(ctx, limit)
 	if err != nil {
 		slog.ErrorContext(ctx, "error finding unprocessed events", Err(err))
 		span.RecordError(err)
@@ -283,8 +259,14 @@ func (p *Processor) processEvent(ctx context.Context, event *Event) {
 		return
 	}
 
-	err = p.repo.Transaction(ctx, func(txRepo Repository) error {
-		event, err := txRepo.FindByIDForUpdate(ctx, event.ID, true)
+	metricAttrs := []attribute.KeyValue{
+		attribute.String(p.applyTelemetryPrefix("event.type"), event.Name.String()),
+	}
+
+	err = p.eventRepo.Transaction(ctx, func(txEventRepo EventRepository) error {
+		// TODO: eventLogger
+
+		event, err := txEventRepo.FindByIDForUpdate(ctx, event.ID, true)
 		if err != nil {
 			// Locked rows are skipped, so do not error on not found.
 			if errors.Is(err, ErrNotFound) {
@@ -298,77 +280,68 @@ func (p *Processor) processEvent(ctx context.Context, event *Event) {
 			return nil
 		}
 
-		config := p.configMap[event.Name]
-		if config == nil {
-			config = &Config{}
+		handlerConfigMap := p.configMap[event.Name]
+		if handlerConfigMap == nil {
+			handlerConfigMap = HandlerConfigMap{}
 		}
 
-		if len(config.Handlers) == 0 {
+		if len(handlerConfigMap) == 0 {
 			logger.WarnContext(ctx, fmt.Sprintf("no handlers mapped for %s event", event.Name))
 		}
 
-		metricAttrs := []attribute.KeyValue{
-			attribute.String(p.applyTelemetryPrefix("event.type"), event.Name.String()),
-		}
+		var requests []*HandlerRequest
+		for handlerName, handlerConfig := range handlerConfigMap {
+			request, err := NewHandlerRequest(
+				event,
+				handlerName,
+				handlerConfig.MaxErrors,
+				handlerConfig.Priority,
+			)
 
-		err = event.Process(ctx, config)
-		if err != nil {
-			isRetryable := errors.Is(err, ErrRetryable)
-			metricAttrs = append(metricAttrs,
-				attribute.Bool(p.applyTelemetryPrefix("event.retryable"), isRetryable),
-				attribute.Int(p.applyTelemetryPrefix("event.errors"), event.Errors))
-			var unprocessedHandlerNames []string
-			for handlerName, handlerResult := range event.UnprocessedHandlers() {
-				unprocessedHandlerNames = append(unprocessedHandlerNames, handlerName.String())
-				handlerLogger := logger.With("handlerName", handlerName)
-				var logLevel slog.Level
-				if isRetryable {
-					logLevel = slog.LevelWarn
-				} else {
-					logLevel = slog.LevelError
-				}
-
-				handlerLogger.Log(
-					ctx,
-					logLevel,
-					fmt.Sprintf("error while processing %s event with %s handler", event.Name, handlerName),
-					Err(handlerResult.LastError),
-					"lastProcessAttmptAt", handlerResult.LastProcessAttemptAt,
-				)
-
-				if !isRetryable {
-					span.RecordError(fmt.Errorf("processing %s event with \"%s\" handler: %w", event.Name, handlerName, handlerResult.LastError))
-				}
+			if err != nil {
+				return fmt.Errorf("new handler request: %w", err)
 			}
 
-			metricAttrs = append(metricAttrs,
-				attribute.StringSlice(p.applyTelemetryPrefix("event.unprocessed_handlers"), unprocessedHandlerNames))
-			p.failureCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
-
-			if !isRetryable {
-				logger.ErrorContext(ctx, fmt.Sprintf("%s event process error", event.Name), Err(err))
-				span.RecordError(err)
-				span.SetStatus(codes.Error, "event process error")
-			}
-		} else {
-			p.successCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
+			requests = append(requests, request)
 		}
 
-		err = txRepo.Update(ctx, event)
+		if len(requests) > 0 {
+			err = p.handlerRequestRepo.Transaction(ctx, func(txHandlerRequestRepo HandlerRequestRepository) error {
+				for _, request := range requests {
+					err := retry.Do(func() error {
+						return txHandlerRequestRepo.Create(ctx, request)
+					})
+					if err != nil {
+						return fmt.Errorf("creating handler request: %w", err)
+					}
+				}
+
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+
+		event.ProcessedAt = Ptr(time.Now())
+
+		err = retry.Do(func() error {
+			return txEventRepo.Update(ctx, event)
+		})
 		if err != nil {
 			return fmt.Errorf("updating %s event: %w", event.Name, err)
 		}
 
-		if event.ProcessedAt != nil {
-			p.timeHistogram.Record(ctx, event.ProcessedAt.Sub(event.Timestamp).Seconds(), metric.WithAttributes(metricAttrs...))
-		}
+		p.successCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
+		p.timeHistogram.Record(ctx, event.ProcessedAt.Sub(event.Timestamp).Seconds(), metric.WithAttributes(metricAttrs...))
 
 		return nil
 	})
 	if err != nil {
-		logger.ErrorContext(ctx, "error running transaction", Err(err))
+		p.failureCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
+		logger.ErrorContext(ctx, "error processing event", Err(err))
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "error running transaction")
+		span.SetStatus(codes.Error, "error processing event")
 	}
 }
 
@@ -394,7 +367,7 @@ func (p *Processor) Shutdown(ctx context.Context) error {
 func (p *Processor) registerMeterCallbacks() error {
 	var registrations []metric.Registration
 	registration, err := p.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
-		count, err := p.repo.CountUnprocessed(ctx)
+		count, err := p.eventRepo.CountUnprocessed(ctx)
 		if err != nil {
 			return fmt.Errorf("counting unprocessed events: %w", err)
 		}
@@ -410,7 +383,7 @@ func (p *Processor) registerMeterCallbacks() error {
 	registrations = append(registrations, registration)
 
 	registration, err = p.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
-		oldest, err := p.repo.FindOldestUnprocessed(ctx)
+		oldest, err := p.eventRepo.FindOldestUnprocessed(ctx)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				o.ObserveFloat64(p.unprocessedMaxAgeGauge, 0)
@@ -427,22 +400,6 @@ func (p *Processor) registerMeterCallbacks() error {
 	}, p.unprocessedMaxAgeGauge)
 	if err != nil {
 		return fmt.Errorf("registering callback for max unprocessed event age gauge: %w", err)
-	}
-
-	registrations = append(registrations, registration)
-
-	registration, err = p.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
-		count, err := p.repo.CountDead(ctx)
-		if err != nil {
-			return fmt.Errorf("counting dead events: %w", err)
-		}
-
-		o.ObserveInt64(p.deadCountGauge, int64(count))
-
-		return nil
-	}, p.deadCountGauge)
-	if err != nil {
-		return fmt.Errorf("registering callback for dead event count guage: %w", err)
 	}
 
 	registrations = append(registrations, registration)
