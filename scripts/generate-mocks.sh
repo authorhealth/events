@@ -7,4 +7,4 @@ cd ..
 
 find . -name "mock_*.go" -delete
 
-mockery --quiet
+go tool github.com/vektra/mockery/v2 --log-level=error
