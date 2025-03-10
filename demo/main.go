@@ -93,7 +93,7 @@ func main() {
 	}
 
 	go func() {
-		slog.Info("starting event processor", "interval", eventProcessorInterval, "limit", eventExecutorLimit)
+		slog.Info("starting event processor", "interval", eventProcessorInterval, "limit", eventProcessorLimit)
 
 		err := eventProcessor.Start(ctx, eventProcessorInterval, eventProcessorLimit)
 		if err != nil {
