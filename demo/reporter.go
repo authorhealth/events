@@ -23,7 +23,7 @@ func NewReporter(eventRepo events.Repository) *Reporter {
 	}
 }
 
-func (r *Reporter) Start(ctx context.Context, interval time.Duration) error {
+func (r *Reporter) Start(ctx context.Context, interval time.Duration) {
 	defer func() {
 		r.done <- true
 	}()
@@ -36,7 +36,7 @@ func (r *Reporter) Start(ctx context.Context, interval time.Duration) error {
 			r.report(ctx)
 
 		case <-r.shutdown:
-			return nil
+			return
 		}
 	}
 }
