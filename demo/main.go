@@ -18,13 +18,13 @@ const (
 
 	domainEventProducerInterval = 1 * time.Second
 
-	eventProcessorInterval   = 5 * time.Second
 	eventProcessorLimit      = 50
 	eventProcessorNumWorkers = 1
 
-	eventExecutorInterval   = 5 * time.Second
 	eventExecutorLimit      = 50
 	eventExecutorNumWorkers = 5
+
+	eventSchedulerInterval = 5 * time.Second
 
 	reporterInterval = 1 * time.Second
 
@@ -99,16 +99,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	go func() {
-		slog.Info("starting event processor", "interval", eventProcessorInterval, "limit", eventProcessorLimit)
-
-		err := eventProcessor.Start(ctx, eventProcessorInterval, eventProcessorLimit)
-		if err != nil {
-			slog.Error("error starting event processor", events.Err(err))
-			os.Exit(1)
-		}
-	}()
-
 	eventExecutor, err := events.NewExecutor(
 		handlerRequestRepo,
 		configMap,
@@ -121,10 +111,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	go func() {
-		slog.Info("starting event executor", "interval", eventExecutorInterval, "limit", eventExecutorLimit)
+	eventScheduler := events.NewScheduler(
+		eventExecutor,
+		eventProcessor,
+	)
 
-		err := eventExecutor.Start(ctx, eventExecutorInterval, eventExecutorLimit)
+	go func() {
+		slog.Info("starting event executor", "interval", eventSchedulerInterval, "processorLimit", eventProcessorLimit, "executorLimit", eventExecutorLimit)
+
+		err := eventScheduler.Start(ctx, eventSchedulerInterval, eventProcessorLimit, eventExecutorLimit)
 		if err != nil {
 			slog.Error("error starting event executor", events.Err(err))
 			os.Exit(1)
@@ -171,15 +166,9 @@ func main() {
 		slog.Warn("error shutting down domain event producer", events.Err(err))
 	}
 
-	slog.Info("shutting down event processor")
-	err = eventProcessor.Shutdown(shutdownCtx)
+	slog.Info("shutting down event scheduler")
+	err = eventScheduler.Shutdown(shutdownCtx)
 	if err != nil {
-		slog.Warn("error shutting down event processor", events.Err(err))
-	}
-
-	slog.Info("shutting down event executor")
-	err = eventExecutor.Shutdown(shutdownCtx)
-	if err != nil {
-		slog.Warn("error shutting down event executor", events.Err(err))
+		slog.Warn("error shutting down event scheduler", events.Err(err))
 	}
 }

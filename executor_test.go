@@ -3,7 +3,6 @@ package events
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 	"time"
 
@@ -12,10 +11,9 @@ import (
 	mock "github.com/stretchr/testify/mock"
 )
 
-func TestExecutor(t *testing.T) {
+func TestExecutor_executeRequests(t *testing.T) {
 	assert := assert.New(t)
 
-	duration := 100 * time.Millisecond
 	limit := 5
 
 	entityID := uuid.New().String()
@@ -39,27 +37,18 @@ func TestExecutor(t *testing.T) {
 		barUpdatedHandlerRequest,
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(len(requests))
-
 	txHandlerRequestRepo := NewMockHandlerRequestRepository(t)
 	txHandlerRequestRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedHandlerRequest.ID, true).Return(fooUpdatedHandlerRequest, nil).Once()
 	txHandlerRequestRepo.EXPECT().FindByIDForUpdate(ctxMatcher, barUpdatedHandlerRequest.ID, true).Return(barUpdatedHandlerRequest, nil).Once()
 	txHandlerRequestRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(r *HandlerRequest) bool {
 		return r.ID == fooUpdatedHandlerRequest.ID &&
 			assert.NotNil(r.CompletedAt)
-	})).RunAndReturn(func(ctx context.Context, r *HandlerRequest) error {
-		wg.Done()
-		return nil
-	}).Once()
+	})).Return(nil).Once()
 	txHandlerRequestRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(r *HandlerRequest) bool {
 		return r.ID == barUpdatedHandlerRequest.ID &&
 			assert.Nil(r.CompletedAt) &&
 			assert.Error(r.LastError)
-	})).RunAndReturn(func(ctx context.Context, r *HandlerRequest) error {
-		wg.Done()
-		return nil
-	}).Once()
+	})).Return(nil).Once()
 
 	handlerRequestRepo := NewMockHandlerRequestRepository(t)
 	handlerRequestRepo.EXPECT().FindUnexecuted(ctxMatcher, limit).Return(requests, nil).Once()
@@ -81,24 +70,15 @@ func TestExecutor(t *testing.T) {
 		WithEvent(barUpdatedEventName, WithHandler(barUpdatedHandler)),
 	)
 
-	p, err := NewExecutor(handlerRequestRepo, eventMap, nil, "", 2)
+	e, err := NewExecutor(handlerRequestRepo, eventMap, nil, "", 2)
 	assert.NoError(err)
 
-	go func() {
-		err := p.Start(context.Background(), duration, limit)
-		assert.NoError(err)
-	}()
-
-	wg.Wait()
-
-	err = p.Shutdown(context.Background())
-	assert.NoError(err)
+	e.executeRequests(context.Background(), limit)
 }
 
-func TestExecutor_not_found(t *testing.T) {
+func TestExecutor_executeRequests_not_found(t *testing.T) {
 	assert := assert.New(t)
 
-	duration := 100 * time.Millisecond
 	limit := 5
 
 	entityID := uuid.New().String()
@@ -119,14 +99,8 @@ func TestExecutor_not_found(t *testing.T) {
 		fooUpdatedHandlerRequest,
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(len(requests))
-
 	txHandlerRequestRepo := NewMockHandlerRequestRepository(t)
-	txHandlerRequestRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedHandlerRequest.ID, true).RunAndReturn(func(ctx context.Context, id string, b bool) (*HandlerRequest, error) {
-		wg.Done()
-		return nil, ErrNotFound
-	})
+	txHandlerRequestRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedHandlerRequest.ID, true).Return(nil, ErrNotFound)
 
 	handlerRequestRepo := NewMockHandlerRequestRepository(t)
 	handlerRequestRepo.EXPECT().FindUnexecuted(ctxMatcher, limit).Return(requests, nil).Once()
@@ -144,24 +118,15 @@ func TestExecutor_not_found(t *testing.T) {
 		WithEvent(fooUpdatedEventName, WithHandler(fooUpdatedHandler)),
 	)
 
-	p, err := NewExecutor(handlerRequestRepo, eventMap, nil, "", 2)
+	e, err := NewExecutor(handlerRequestRepo, eventMap, nil, "", 2)
 	assert.NoError(err)
 
-	go func() {
-		err := p.Start(context.Background(), duration, limit)
-		assert.NoError(err)
-	}()
-
-	wg.Wait()
-
-	err = p.Shutdown(context.Background())
-	assert.NoError(err)
+	e.executeRequests(context.Background(), limit)
 }
 
-func TestExecutor_already_executed(t *testing.T) {
+func TestExecutor_executeRequests_already_executed(t *testing.T) {
 	assert := assert.New(t)
 
-	duration := 100 * time.Millisecond
 	limit := 5
 
 	entityID := uuid.New().String()
@@ -184,14 +149,8 @@ func TestExecutor_already_executed(t *testing.T) {
 		fooUpdatedHandlerRequest,
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(len(requests))
-
 	txHandlerRequestRepo := NewMockHandlerRequestRepository(t)
-	txHandlerRequestRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedHandlerRequest.ID, true).RunAndReturn(func(ctx context.Context, id string, b bool) (*HandlerRequest, error) {
-		wg.Done()
-		return fooUpdatedHandlerRequest, nil
-	})
+	txHandlerRequestRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedHandlerRequest.ID, true).Return(fooUpdatedHandlerRequest, nil)
 
 	handlerRequestRepo := NewMockHandlerRequestRepository(t)
 	handlerRequestRepo.EXPECT().FindUnexecuted(ctxMatcher, limit).Return(requests, nil).Once()
@@ -209,16 +168,8 @@ func TestExecutor_already_executed(t *testing.T) {
 		WithEvent(fooUpdatedEventName, WithHandler(fooUpdatedHandler)),
 	)
 
-	p, err := NewExecutor(handlerRequestRepo, eventMap, nil, "", 2)
+	e, err := NewExecutor(handlerRequestRepo, eventMap, nil, "", 2)
 	assert.NoError(err)
 
-	go func() {
-		err := p.Start(context.Background(), duration, limit)
-		assert.NoError(err)
-	}()
-
-	wg.Wait()
-
-	err = p.Shutdown(context.Background())
-	assert.NoError(err)
+	e.executeRequests(context.Background(), limit)
 }

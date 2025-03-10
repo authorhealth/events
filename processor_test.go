@@ -2,7 +2,6 @@ package events
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
@@ -11,10 +10,9 @@ import (
 	mock "github.com/stretchr/testify/mock"
 )
 
-func TestProcessor(t *testing.T) {
+func TestProcessor_processEvents(t *testing.T) {
 	assert := assert.New(t)
 
-	duration := 100 * time.Millisecond
 	limit := 5
 
 	entityID := uuid.New().String()
@@ -32,26 +30,17 @@ func TestProcessor(t *testing.T) {
 		barUpdatedEvent,
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(len(events))
-
 	txEventRepo := NewMockEventRepository(t)
 	txEventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedEvent.ID, true).Return(fooUpdatedEvent, nil).Once()
 	txEventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, barUpdatedEvent.ID, true).Return(barUpdatedEvent, nil).Once()
 	txEventRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(e *Event) bool {
 		return e.ID == fooUpdatedEvent.ID &&
 			assert.NotNil(e.ProcessedAt)
-	})).RunAndReturn(func(ctx context.Context, e *Event) error {
-		wg.Done()
-		return nil
-	}).Once()
+	})).Return(nil).Once()
 	txEventRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(e *Event) bool {
 		return e.ID == barUpdatedEvent.ID &&
 			assert.NotNil(e.ProcessedAt)
-	})).RunAndReturn(func(ctx context.Context, e *Event) error {
-		wg.Done()
-		return nil
-	}).Once()
+	})).Return(nil).Once()
 
 	eventRepo := NewMockEventRepository(t)
 	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return(events, nil).Once()
@@ -91,22 +80,12 @@ func TestProcessor(t *testing.T) {
 	p, err := NewProcessor(eventRepo, handlerRequestRepo, eventMap, nil, "", 2)
 	assert.NoError(err)
 
-	go func() {
-		err := p.Start(context.Background(), duration, limit)
-		assert.NoError(err)
-	}()
-
-	wg.Wait()
-
-	err = p.Shutdown(context.Background())
-	assert.NoError(err)
-
+	p.processEvents(context.Background(), limit)
 }
 
-func TestProcessor_not_found(t *testing.T) {
+func TestProcessor_processEvents_not_found(t *testing.T) {
 	assert := assert.New(t)
 
-	duration := 100 * time.Millisecond
 	limit := 5
 
 	entityID := uuid.New().String()
@@ -124,14 +103,8 @@ func TestProcessor_not_found(t *testing.T) {
 		fooUpdatedEvent,
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(len(events))
-
 	txEventRepo := NewMockEventRepository(t)
-	txEventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedEvent.ID, true).RunAndReturn(func(ctx context.Context, _ string, _ bool) (*Event, error) {
-		wg.Done()
-		return nil, ErrNotFound
-	})
+	txEventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedEvent.ID, true).Return(nil, ErrNotFound)
 
 	eventRepo := NewMockEventRepository(t)
 	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return(events, nil).Once()
@@ -154,21 +127,12 @@ func TestProcessor_not_found(t *testing.T) {
 	p, err := NewProcessor(eventRepo, handlerRequestRepo, eventMap, nil, "", 2)
 	assert.NoError(err)
 
-	go func() {
-		err := p.Start(context.Background(), duration, limit)
-		assert.NoError(err)
-	}()
-
-	wg.Wait()
-
-	err = p.Shutdown(context.Background())
-	assert.NoError(err)
+	p.processEvents(context.Background(), limit)
 }
 
-func TestProcessor_already_processed(t *testing.T) {
+func TestProcessor_processEvents_already_processed(t *testing.T) {
 	assert := assert.New(t)
 
-	duration := 100 * time.Millisecond
 	limit := 5
 
 	entityID := uuid.New().String()
@@ -187,14 +151,8 @@ func TestProcessor_already_processed(t *testing.T) {
 		fooUpdatedEvent,
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(len(events))
-
 	txEventRepo := NewMockEventRepository(t)
-	txEventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedEvent.ID, true).RunAndReturn(func(ctx context.Context, _ string, _ bool) (*Event, error) {
-		wg.Done()
-		return fooUpdatedEvent, nil
-	})
+	txEventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedEvent.ID, true).Return(fooUpdatedEvent, nil)
 
 	eventRepo := NewMockEventRepository(t)
 	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return(events, nil).Once()
@@ -217,21 +175,12 @@ func TestProcessor_already_processed(t *testing.T) {
 	p, err := NewProcessor(eventRepo, handlerRequestRepo, eventMap, nil, "", 2)
 	assert.NoError(err)
 
-	go func() {
-		err := p.Start(context.Background(), duration, limit)
-		assert.NoError(err)
-	}()
-
-	wg.Wait()
-
-	err = p.Shutdown(context.Background())
-	assert.NoError(err)
+	p.processEvents(context.Background(), limit)
 }
 
-func TestProcessor_no_handler(t *testing.T) {
+func TestProcessor_processEvents_no_handler(t *testing.T) {
 	assert := assert.New(t)
 
-	duration := 100 * time.Millisecond
 	limit := 5
 
 	entityID := uuid.New().String()
@@ -244,18 +193,12 @@ func TestProcessor_no_handler(t *testing.T) {
 		fooUpdatedEvent,
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(len(events))
-
 	txEventRepo := NewMockEventRepository(t)
 	txEventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedEvent.ID, true).Return(fooUpdatedEvent, nil).Once()
 	txEventRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(e *Event) bool {
 		return e.ID == fooUpdatedEvent.ID &&
 			assert.NotNil(e.ProcessedAt)
-	})).RunAndReturn(func(ctx context.Context, e *Event) error {
-		wg.Done()
-		return nil
-	}).Once()
+	})).Return(nil).Once()
 
 	eventRepo := NewMockEventRepository(t)
 	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return(events, nil).Once()
@@ -271,13 +214,5 @@ func TestProcessor_no_handler(t *testing.T) {
 	p, err := NewProcessor(eventRepo, handlerRequestRepo, eventMap, nil, "", 2)
 	assert.NoError(err)
 
-	go func() {
-		err := p.Start(context.Background(), duration, limit)
-		assert.NoError(err)
-	}()
-
-	wg.Wait()
-
-	err = p.Shutdown(context.Background())
-	assert.NoError(err)
+	p.processEvents(context.Background(), limit)
 }

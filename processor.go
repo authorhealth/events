@@ -44,7 +44,6 @@ type BeforeProcessHook func(context.Context, *Event) (context.Context, *Event, e
 type Processor struct {
 	beforeProcessHook          BeforeProcessHook
 	configMap                  ConfigMap
-	done                       chan bool
 	eventRepo                  EventRepository
 	failureCounter             metric.Int64Counter
 	meter                      metric.Meter
@@ -91,7 +90,6 @@ func NewProcessor(
 	p := &Processor{
 		beforeProcessHook:   beforeProcessHook,
 		configMap:           conf,
-		done:                make(chan bool, 1),
 		eventRepo:           eventRepo,
 		handlerRequestRepo:  handlerRequestRepo,
 		meter:               otel.GetMeterProvider().Meter("github.com/authorhealth/events/v2"),
@@ -144,29 +142,6 @@ func NewProcessor(
 	}
 
 	return p, nil
-}
-
-func (p *Processor) Start(ctx context.Context, interval time.Duration, limit int) error {
-	defer func() {
-		p.done <- true
-	}()
-
-	err := p.registerMeterCallbacks()
-	if err != nil {
-		return fmt.Errorf("registering meter callbacks: %w", err)
-	}
-
-	ticker := time.NewTicker(interval)
-
-	for {
-		select {
-		case <-ticker.C:
-			p.processEvents(ctx, limit)
-
-		case <-p.shutdown:
-			return nil
-		}
-	}
 }
 
 func (p *Processor) beforeProcess(ctx context.Context, event *Event) (context.Context, *Event, error) {
@@ -342,25 +317,6 @@ func (p *Processor) processEvent(ctx context.Context, event *Event) {
 		logger.ErrorContext(ctx, "error processing event", Err(err))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "error processing event")
-	}
-}
-
-func (p *Processor) Shutdown(ctx context.Context) error {
-	p.shutdown <- true
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-
-		case <-p.done:
-			err := p.unregisterMeterCallbacks()
-			if err != nil {
-				return fmt.Errorf("unregistering meter callbacks: %w", err)
-			}
-
-			return nil
-		}
 	}
 }
 

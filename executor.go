@@ -59,7 +59,6 @@ type Executor struct {
 	beforeExecuteHook          BeforeExecuteHook
 	configMap                  ConfigMap
 	deadCountGauge             metric.Int64ObservableGauge
-	done                       chan bool
 	failureCounter             metric.Int64Counter
 	meter                      metric.Meter
 	meterCallbackRegistrations []metric.Registration
@@ -105,7 +104,6 @@ func NewExecutor(
 	e := &Executor{
 		beforeExecuteHook:  beforeExecuteHook,
 		configMap:          conf,
-		done:               make(chan bool, 1),
 		meter:              otel.GetMeterProvider().Meter("github.com/authorhealth/events/v2"),
 		numExecutorWorkers: numExecutorWorkers,
 		repo:               repo,
@@ -165,29 +163,6 @@ func NewExecutor(
 	}
 
 	return e, nil
-}
-
-func (e *Executor) Start(ctx context.Context, interval time.Duration, limit int) error {
-	defer func() {
-		e.done <- true
-	}()
-
-	err := e.registerMeterCallbacks()
-	if err != nil {
-		return fmt.Errorf("registering meter callbacks: %w", err)
-	}
-
-	ticker := time.NewTicker(interval)
-
-	for {
-		select {
-		case <-ticker.C:
-			e.executeRequests(ctx, limit)
-
-		case <-e.shutdown:
-			return nil
-		}
-	}
 }
 
 func (e *Executor) beforeExecute(ctx context.Context, request *HandlerRequest) (context.Context, *HandlerRequest, error) {
@@ -355,25 +330,6 @@ func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) 
 		logger.ErrorContext(ctx, "error running transaction", Err(err))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "error running transaction")
-	}
-}
-
-func (p *Executor) Shutdown(ctx context.Context) error {
-	p.shutdown <- true
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-
-		case <-p.done:
-			err := p.unregisterMeterCallbacks()
-			if err != nil {
-				return fmt.Errorf("unregistering meter callbacks: %w", err)
-			}
-
-			return nil
-		}
 	}
 }
 
