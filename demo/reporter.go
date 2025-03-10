@@ -73,19 +73,19 @@ func (r *Reporter) report(ctx context.Context) {
 		maxUnprocessedEventAge = time.Since(oldestUnprocessedEvent.Timestamp).Seconds()
 	}
 
-	unexecutedHandlerCount, err := r.handlerRequestRepo.CountUnexecuted(ctx)
+	unexecutedRequestCount, err := r.handlerRequestRepo.CountUnexecuted(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "error counting unexecuted handler requests", events.Err(err))
 	}
 
-	oldestUnexecutedHandlerRequest, err := r.handlerRequestRepo.FindOldestUnexecuted(ctx)
+	oldestUnexecutedRequest, err := r.handlerRequestRepo.FindOldestUnexecuted(ctx)
 	if err != nil && !errors.Is(err, events.ErrNotFound) {
 		slog.ErrorContext(ctx, "error finding oldest unexecuted handler request", events.Err(err))
 	}
 
-	var maxUnexecutedHandlerRequestAge float64
-	if oldestUnexecutedHandlerRequest != nil {
-		maxUnexecutedHandlerRequestAge = time.Since(oldestUnexecutedHandlerRequest.EventTimestamp).Seconds()
+	var maxUnexecutedRequestAge float64
+	if oldestUnexecutedRequest != nil {
+		maxUnexecutedRequestAge = time.Since(oldestUnexecutedRequest.EventTimestamp).Seconds()
 	}
 
 	deadRequestCount, err := r.handlerRequestRepo.CountDead(ctx)
@@ -98,8 +98,8 @@ func (r *Reporter) report(ctx context.Context) {
 		"event system report",
 		slog.Int("unprocessedEventCount", unprocessedEventCount),
 		slog.Float64("maxUnprocessedEventAge", maxUnprocessedEventAge),
-		slog.Int("unexecutedHandlerCount", unexecutedHandlerCount),
-		slog.Float64("maxUnexecutedHandlerRequestAge", maxUnexecutedHandlerRequestAge),
+		slog.Int("unexecutedRequestCount", unexecutedRequestCount),
+		slog.Float64("maxUnexecutedRequestAge", maxUnexecutedRequestAge),
 		slog.Int("deadRequestCount", deadRequestCount),
 	)
 }
