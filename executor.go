@@ -131,7 +131,7 @@ func NewExecutor(
 
 	e.timeHistogram, err = e.meter.Float64Histogram(
 		e.applyTelemetryPrefix("requests.execution_time"),
-		metric.WithDescription("The time spent execution a handler request."),
+		metric.WithDescription("The time spent executing a handler request."),
 		metric.WithUnit("s"),
 		metric.WithExplicitBucketBoundaries(0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300))
 	if err != nil {
