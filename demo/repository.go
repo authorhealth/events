@@ -137,6 +137,10 @@ func (r *EventRepository) FindOldestUnprocessed(ctx context.Context) (*events.Ev
 		}
 	}
 
+	if oldestUnprocessedEvent == nil {
+		return nil, events.ErrNotFound
+	}
+
 	return oldestUnprocessedEvent, nil
 }
 
@@ -414,6 +418,10 @@ func (r *HandlerRequestRepository) FindOldestUnexecuted(ctx context.Context) (*e
 		if oldestUnexecutedHandlerRequest == nil || item.handlerRequest.EventTimestamp.Before(oldestUnexecutedHandlerRequest.EventTimestamp) {
 			oldestUnexecutedHandlerRequest = item.handlerRequest
 		}
+	}
+
+	if oldestUnexecutedHandlerRequest == nil {
+		return nil, events.ErrNotFound
 	}
 
 	return oldestUnexecutedHandlerRequest, nil
