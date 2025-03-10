@@ -272,7 +272,7 @@ func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) 
 		"requestHandlerName", request.HandlerName.String(),
 	)
 
-	logger.InfoContext(ctx, fmt.Sprintf("execution %s request", request.HandlerName))
+	logger.DebugContext(ctx, fmt.Sprintf("executing %s request", request.HandlerName))
 
 	ctx, request, err := e.beforeExecute(ctx, request)
 	if err != nil {

@@ -249,7 +249,7 @@ func (p *Processor) processEvent(ctx context.Context, event *Event) {
 		"eventName", event.Name.String(),
 	)
 
-	logger.InfoContext(ctx, fmt.Sprintf("processing %s event", event.Name))
+	logger.DebugContext(ctx, fmt.Sprintf("processing %s event", event.Name))
 
 	ctx, event, err := p.beforeProcess(ctx, event)
 	if err != nil {
