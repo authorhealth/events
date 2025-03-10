@@ -63,7 +63,6 @@ func main() {
 		),
 		events.WithEvent(DomainEventName,
 			events.WithHandler(DomainEventHandler()),
-			events.WithHandler(FailingEventHandler()),
 		),
 	)
 
