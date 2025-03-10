@@ -215,6 +215,10 @@ func (r *EventRepository) FindOldestUnprocessed(ctx context.Context) (*events.Ev
 		}
 	}
 
+	if oldestUnprocessedEvent == nil {
+		return nil, events.ErrNotFound
+	}
+
 	return oldestUnprocessedEvent, nil
 }
 

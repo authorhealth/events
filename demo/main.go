@@ -22,6 +22,8 @@ const (
 	eventProcessorLimit      = 50
 	eventProcessorNumWorkers = 5
 
+	reporterInterval = 1 * time.Second
+
 	shutdownTimeout = 10 * time.Second
 )
 
@@ -73,6 +75,12 @@ func main() {
 		domainEventProducer.Start(ctx, domainEventProducerInterval)
 	}()
 
+	reporter := NewReporter(eventRepo)
+	go func() {
+		slog.Info("starting reporter", "interval", reporterInterval)
+		reporter.Start(ctx, reporterInterval)
+	}()
+
 	eventProcessor, err := events.NewProcessor(
 		eventRepo,
 		configMap,
@@ -121,6 +129,12 @@ func main() {
 	err = applicationEventProducer.Shutdown(shutdownCtx)
 	if err != nil {
 		slog.Warn("error shutting down application event producer", events.Err(err))
+	}
+
+	slog.Info("shutting down reporter")
+	err = reporter.Shutdown(shutdownCtx)
+	if err != nil {
+		slog.Warn("error shutting down reporter", events.Err(err))
 	}
 
 	slog.Info("shutting down domain event producer")
