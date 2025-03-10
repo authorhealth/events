@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/authorhealth/events"
 )
@@ -78,6 +79,10 @@ func (r *EventRepository) CountUnprocessed(ctx context.Context) (int, error) {
 		}
 
 		if item.event.Errors >= events.MaxEventErrors {
+			continue
+		}
+
+		if item.event.BackoffUntil != nil && item.event.BackoffUntil.After(time.Now()) {
 			continue
 		}
 
@@ -201,6 +206,10 @@ func (r *EventRepository) FindOldestUnprocessed(ctx context.Context) (*events.Ev
 			continue
 		}
 
+		if item.event.BackoffUntil != nil && item.event.BackoffUntil.After(time.Now()) {
+			continue
+		}
+
 		if oldestUnprocessedEvent == nil || item.event.Timestamp.Before(oldestUnprocessedEvent.Timestamp) {
 			oldestUnprocessedEvent = item.event
 		}
@@ -215,8 +224,12 @@ func (r *EventRepository) FindUnprocessed(ctx context.Context, limit int) ([]*ev
 
 	slog.DebugContext(ctx, "finding unprocessed events", "limit", limit)
 
+	sortedItems := slices.SortedStableFunc(maps.Values(r.items), func(a *EventRepositoryItem, b *EventRepositoryItem) int {
+		return a.event.Timestamp.Compare(b.event.Timestamp)
+	})
+
 	var unprocessedEvents []*events.Event
-	for _, item := range r.items {
+	for _, item := range sortedItems {
 		if len(unprocessedEvents) >= limit {
 			break
 		}
@@ -230,6 +243,10 @@ func (r *EventRepository) FindUnprocessed(ctx context.Context, limit int) ([]*ev
 		}
 
 		if item.event.Errors >= events.MaxEventErrors {
+			continue
+		}
+
+		if item.event.BackoffUntil != nil && item.event.BackoffUntil.After(time.Now()) {
 			continue
 		}
 
