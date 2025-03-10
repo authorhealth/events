@@ -69,9 +69,19 @@ func (r *EventRepository) CountUnprocessed(ctx context.Context) (int, error) {
 
 	var count int
 	for _, item := range r.items {
-		if item.event.ProcessedAt == nil {
-			count++
+		if item.event.ProcessedAt != nil {
+			continue
 		}
+
+		if item.event.ArchivedAt != nil {
+			continue
+		}
+
+		if item.event.Errors >= events.MaxEventErrors {
+			continue
+		}
+
+		count++
 	}
 
 	return count, nil
@@ -183,6 +193,14 @@ func (r *EventRepository) FindOldestUnprocessed(ctx context.Context) (*events.Ev
 			continue
 		}
 
+		if item.event.ArchivedAt != nil {
+			continue
+		}
+
+		if item.event.Errors >= events.MaxEventErrors {
+			continue
+		}
+
 		if oldestUnprocessedEvent == nil || item.event.Timestamp.Before(oldestUnprocessedEvent.Timestamp) {
 			oldestUnprocessedEvent = item.event
 		}
@@ -204,6 +222,14 @@ func (r *EventRepository) FindUnprocessed(ctx context.Context, limit int) ([]*ev
 		}
 
 		if item.event.ProcessedAt != nil {
+			continue
+		}
+
+		if item.event.ArchivedAt != nil {
+			continue
+		}
+
+		if item.event.Errors >= events.MaxEventErrors {
 			continue
 		}
 
