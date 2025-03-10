@@ -58,8 +58,7 @@ func main() {
 	)
 
 	configMap.AddHandlers(DomainEventName,
-		ApplicationEventHandler(),
-		FailingEventHandler(),
+		DomainEventHandler(),
 	)
 
 	applicationEventProducer := NewApplicationEventProducer(eventRepo)
