@@ -3,3 +3,5 @@ mock_*.go
 .DS_Store
 .vscode/extensions.json
 playground/
+metrics.jsonl
+traces.jsonl
