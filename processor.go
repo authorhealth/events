@@ -205,9 +205,8 @@ func (p *Processor) processEvent(ctx context.Context, event *Event) {
 		attribute.String(p.applyTelemetryPrefix("correlation_id"), event.CorrelationID),
 	}
 
-	if event.EntityID != nil {
-		entityID := event.EntityID
-		traceAttrs = append(traceAttrs, attribute.String(p.applyTelemetryPrefix("event.entity.id"), *entityID))
+	if event.EntityID != "" {
+		traceAttrs = append(traceAttrs, attribute.String(p.applyTelemetryPrefix("event.entity.id"), event.EntityID))
 	}
 
 	ctx, span := p.tracer.Start(

@@ -228,9 +228,8 @@ func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) 
 		attribute.String(e.applyTelemetryPrefix("correlation_id"), request.CorrelationID),
 	}
 
-	if request.EventEntityID != nil {
-		entityID := request.EventEntityID
-		traceAttrs = append(traceAttrs, attribute.String(e.applyTelemetryPrefix("request.event.entity.id"), *entityID))
+	if request.EventEntityID != "" {
+		traceAttrs = append(traceAttrs, attribute.String(e.applyTelemetryPrefix("request.event.entity.id"), request.EventEntityID))
 	}
 
 	ctx, span := e.tracer.Start(

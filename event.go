@@ -17,7 +17,7 @@ type Event struct {
 	ID            string         // The event ID.
 	CorrelationID string         // A read-only field that is set by the storage layer.
 	Data          map[string]any // The key/value pairs associated with the event.
-	EntityID      *string        // The entity ID.
+	EntityID      string         // The entity ID.
 	EntityName    string         // The entity name.
 	Name          EventName      // The event name.
 	ProcessedAt   *time.Time     // When the event was successfully processed.
@@ -45,7 +45,7 @@ func NewDomainEvent(name EventName, entityID string, entityName string, data map
 	return &Event{
 		ID:         uuid.Must(uuid.NewV7()).String(),
 		Name:       EventName(name),
-		EntityID:   &entityID,
+		EntityID:   entityID,
 		EntityName: entityName,
 		Data:       data,
 		Timestamp:  time.Now(),

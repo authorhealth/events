@@ -14,21 +14,14 @@ import (
 )
 
 const (
-	applicationEventProducerInterval = 1 * time.Second
-
-	domainEventProducerInterval = 1 * time.Second
-
-	eventProcessorLimit      = 50
-	eventProcessorNumWorkers = 1
-
-	eventExecutorLimit      = 50
-	eventExecutorNumWorkers = 5
-
-	eventSchedulerInterval = 5 * time.Second
-
-	reporterInterval = 1 * time.Second
-
-	shutdownTimeout = 10 * time.Second
+	eventExecutorLimit          = 50
+	eventExecutorNumWorkers     = 5
+	eventProcessorLimit         = 50
+	eventProcessorNumWorkers    = 1
+	eventProducerInterval       = 1 * time.Second
+	eventSchedulerInterval      = 5 * time.Second
+	eventSystemReporterInterval = 1 * time.Second
+	shutdownTimeout             = 10 * time.Second
 )
 
 func main() {
@@ -68,22 +61,16 @@ func main() {
 		),
 	)
 
-	applicationEventProducer := NewApplicationEventProducer(eventRepo)
+	eventProducer := NewEventProducer(eventRepo)
 	go func() {
-		slog.Info("starting application event producer", "interval", applicationEventProducerInterval)
-		applicationEventProducer.Start(ctx, applicationEventProducerInterval)
+		slog.Info("starting event producer", "interval", eventProducerInterval)
+		eventProducer.Start(ctx, eventProducerInterval)
 	}()
 
-	domainEventProducer := NewDomainEventProducer(eventRepo)
+	eventSystemReporter := NewEventSystemReporter(eventRepo, handlerRequestRepo)
 	go func() {
-		slog.Info("starting domain event producer", "interval", domainEventProducerInterval)
-		domainEventProducer.Start(ctx, domainEventProducerInterval)
-	}()
-
-	reporter := NewReporter(eventRepo, handlerRequestRepo)
-	go func() {
-		slog.Info("starting reporter", "interval", reporterInterval)
-		reporter.Start(ctx, reporterInterval)
+		slog.Info("starting event system reporter", "interval", eventSystemReporterInterval)
+		eventSystemReporter.Start(ctx, eventSystemReporterInterval)
 	}()
 
 	eventProcessor, err := events.NewProcessor(
@@ -148,22 +135,16 @@ func main() {
 		slog.Warn("error shutting down tracer provider", events.Err(err))
 	}
 
-	slog.Info("shutting down application event producer")
-	err = applicationEventProducer.Shutdown(shutdownCtx)
+	slog.Info("shutting down event producer")
+	err = eventProducer.Shutdown(shutdownCtx)
 	if err != nil {
-		slog.Warn("error shutting down application event producer", events.Err(err))
+		slog.Warn("error shutting down event producer", events.Err(err))
 	}
 
-	slog.Info("shutting down reporter")
-	err = reporter.Shutdown(shutdownCtx)
+	slog.Info("shutting down event system reporter")
+	err = eventSystemReporter.Shutdown(shutdownCtx)
 	if err != nil {
-		slog.Warn("error shutting down reporter", events.Err(err))
-	}
-
-	slog.Info("shutting down domain event producer")
-	err = domainEventProducer.Shutdown(shutdownCtx)
-	if err != nil {
-		slog.Warn("error shutting down domain event producer", events.Err(err))
+		slog.Warn("error shutting down event system reporter", events.Err(err))
 	}
 
 	slog.Info("shutting down event scheduler")

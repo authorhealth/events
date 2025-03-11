@@ -40,7 +40,7 @@ func DomainEventHandler() *events.Handler {
 			slog.Group(
 				"event",
 				"data", hr.EventData,
-				"entityId", *hr.EventEntityID,
+				"entityId", hr.EventEntityID,
 				"entityName", hr.EventEntityName,
 				"id", hr.EventID,
 				"name", hr.EventName,

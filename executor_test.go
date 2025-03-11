@@ -16,18 +16,14 @@ func TestExecutor_executeRequests(t *testing.T) {
 
 	limit := 5
 
-	entityID := uuid.New().String()
-
 	fooUpdatedEvent, err := NewApplicationEvent(fooUpdatedEventName, map[string]any{"key": "val"})
 	assert.NoError(err)
-	fooUpdatedEvent.EntityID = &entityID
 
 	fooUpdatedHandlerRequest, err := NewHandlerRequest(fooUpdatedEvent, fooUpdatedHandlerName, defaultMaxErrors, defaultPriority)
 	assert.NoError(err)
 
-	barUpdatedEvent, err := NewApplicationEvent(barUpdatedEventName, map[string]any{"key": "val"})
+	barUpdatedEvent, err := NewDomainEvent(barUpdatedEventName, uuid.New().String(), "bar", map[string]any{"key": "val"})
 	assert.NoError(err)
-	barUpdatedEvent.EntityID = &entityID
 
 	barUpdatedHandlerRequest, err := NewHandlerRequest(barUpdatedEvent, barUpdatedHandlerName, defaultMaxErrors, defaultPriority)
 	assert.NoError(err)
@@ -81,12 +77,9 @@ func TestExecutor_executeRequests_not_found(t *testing.T) {
 
 	limit := 5
 
-	entityID := uuid.New().String()
-
 	fooUpdatedEvent := &Event{
 		ID:          uuid.New().String(),
 		Name:        fooUpdatedEventName,
-		EntityID:    &entityID,
 		Data:        map[string]any{"key": "val"},
 		Timestamp:   time.Now(),
 		ProcessedAt: nil,
@@ -129,13 +122,10 @@ func TestExecutor_executeRequests_already_executed(t *testing.T) {
 
 	limit := 5
 
-	entityID := uuid.New().String()
-
 	now := time.Now()
 	fooUpdatedEvent := &Event{
 		ID:        uuid.New().String(),
 		Name:      fooUpdatedEventName,
-		EntityID:  &entityID,
 		Data:      map[string]any{"key": "val"},
 		Timestamp: now,
 	}

@@ -15,15 +15,11 @@ func TestProcessor_processEvents(t *testing.T) {
 
 	limit := 5
 
-	entityID := uuid.New().String()
-
 	fooUpdatedEvent, err := NewApplicationEvent(fooUpdatedEventName, map[string]any{"key": "val"})
 	assert.NoError(err)
-	fooUpdatedEvent.EntityID = &entityID
 
-	barUpdatedEvent, err := NewApplicationEvent(barUpdatedEventName, map[string]any{"key": "val"})
+	barUpdatedEvent, err := NewDomainEvent(barUpdatedEventName, uuid.New().String(), "bar", map[string]any{"key": "val"})
 	assert.NoError(err)
-	barUpdatedEvent.EntityID = &entityID
 
 	events := []*Event{
 		fooUpdatedEvent,
@@ -88,12 +84,9 @@ func TestProcessor_processEvents_not_found(t *testing.T) {
 
 	limit := 5
 
-	entityID := uuid.New().String()
-
 	fooUpdatedEvent := &Event{
 		ID:          uuid.New().String(),
 		Name:        "fooUpdated",
-		EntityID:    &entityID,
 		Data:        map[string]any{"key": "val"},
 		Timestamp:   time.Now(),
 		ProcessedAt: nil,
@@ -135,13 +128,10 @@ func TestProcessor_processEvents_already_processed(t *testing.T) {
 
 	limit := 5
 
-	entityID := uuid.New().String()
-
 	now := time.Now()
 	fooUpdatedEvent := &Event{
 		ID:          uuid.New().String(),
 		Name:        "fooUpdated",
-		EntityID:    &entityID,
 		Data:        map[string]any{"key": "val"},
 		Timestamp:   now,
 		ProcessedAt: &now,
@@ -187,7 +177,7 @@ func TestProcessor_processEvents_no_handler(t *testing.T) {
 
 	fooUpdatedEvent, err := NewApplicationEvent("fooUpdated", map[string]any{"key": "val"})
 	assert.NoError(err)
-	fooUpdatedEvent.EntityID = &entityID
+	fooUpdatedEvent.EntityID = entityID
 
 	events := []*Event{
 		fooUpdatedEvent,

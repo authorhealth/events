@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/authorhealth/events/v2"
+	"github.com/google/uuid"
 )
 
 type EventRepositoryItem struct {
@@ -61,6 +62,8 @@ func (r *EventRepository) Create(ctx context.Context, event *events.Event) error
 	if _, found := r.items[event.ID]; found {
 		return errors.New("there is already an event with the same ID in the collection")
 	}
+
+	event.CorrelationID = uuid.Must(uuid.NewV7()).String()
 
 	r.items[event.ID] = &EventRepositoryItem{
 		event: event,

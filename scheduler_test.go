@@ -18,15 +18,13 @@ func TestScheduler(t *testing.T) {
 	duration := 100 * time.Millisecond
 	limit := 5
 
-	entityID := uuid.New().String()
-
 	fooUpdatedEvent, err := NewApplicationEvent(fooUpdatedEventName, map[string]any{"key": "val"})
 	assert.NoError(err)
-	fooUpdatedEvent.EntityID = &entityID
+	fooUpdatedEvent.EntityID = uuid.New().String()
 
 	barUpdatedEvent, err := NewApplicationEvent(barUpdatedEventName, map[string]any{"key": "val"})
 	assert.NoError(err)
-	barUpdatedEvent.EntityID = &entityID
+	barUpdatedEvent.EntityID = uuid.New().String()
 
 	events := []*Event{
 		fooUpdatedEvent,

@@ -9,15 +9,15 @@ import (
 	"github.com/authorhealth/events/v2"
 )
 
-type Reporter struct {
+type EventSystemReporter struct {
 	done               chan bool
 	eventRepo          events.EventRepository
 	handlerRequestRepo events.HandlerRequestRepository
 	shutdown           chan bool
 }
 
-func NewReporter(eventRepo events.EventRepository, handlerRequestRepo events.HandlerRequestRepository) *Reporter {
-	return &Reporter{
+func NewEventSystemReporter(eventRepo events.EventRepository, handlerRequestRepo events.HandlerRequestRepository) *EventSystemReporter {
+	return &EventSystemReporter{
 		done:               make(chan bool, 1),
 		eventRepo:          eventRepo,
 		handlerRequestRepo: handlerRequestRepo,
@@ -25,7 +25,7 @@ func NewReporter(eventRepo events.EventRepository, handlerRequestRepo events.Han
 	}
 }
 
-func (r *Reporter) Start(ctx context.Context, interval time.Duration) {
+func (r *EventSystemReporter) Start(ctx context.Context, interval time.Duration) {
 	defer func() {
 		r.done <- true
 	}()
@@ -43,7 +43,7 @@ func (r *Reporter) Start(ctx context.Context, interval time.Duration) {
 	}
 }
 
-func (r *Reporter) Shutdown(ctx context.Context) error {
+func (r *EventSystemReporter) Shutdown(ctx context.Context) error {
 	r.shutdown <- true
 
 	for {
@@ -57,7 +57,7 @@ func (r *Reporter) Shutdown(ctx context.Context) error {
 	}
 }
 
-func (r *Reporter) report(ctx context.Context) {
+func (r *EventSystemReporter) report(ctx context.Context) {
 	unprocessedEventCount, err := r.eventRepo.CountUnprocessed(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "error counting unprocessed events", events.Err(err))

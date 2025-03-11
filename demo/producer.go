@@ -13,27 +13,28 @@ const (
 	DomainEventName      events.EventName = "myRadDomainEvent"
 )
 
-type ApplicationEventProducer struct {
+type EventProducer struct {
 	done      chan bool
 	eventRepo events.EventRepository
 	shutdown  chan bool
 }
 
-func NewApplicationEventProducer(eventRepo events.EventRepository) *ApplicationEventProducer {
-	return &ApplicationEventProducer{
+func NewEventProducer(eventRepo events.EventRepository) *EventProducer {
+	return &EventProducer{
 		done:      make(chan bool, 1),
 		eventRepo: eventRepo,
 		shutdown:  make(chan bool, 1),
 	}
 }
 
-func (p *ApplicationEventProducer) Start(ctx context.Context, interval time.Duration) {
+func (p *EventProducer) Start(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 
 	for {
 		select {
 		case <-ticker.C:
-			p.produceEvent(ctx)
+			p.produceApplicationEvent(ctx)
+			p.produceDomainEvent(ctx)
 
 		case <-p.shutdown:
 			p.done <- true
@@ -42,7 +43,7 @@ func (p *ApplicationEventProducer) Start(ctx context.Context, interval time.Dura
 	}
 }
 
-func (p *ApplicationEventProducer) Shutdown(ctx context.Context) error {
+func (p *EventProducer) Shutdown(ctx context.Context) error {
 	p.shutdown <- true
 
 	for {
@@ -56,7 +57,7 @@ func (p *ApplicationEventProducer) Shutdown(ctx context.Context) error {
 	}
 }
 
-func (p *ApplicationEventProducer) produceEvent(ctx context.Context) {
+func (p *EventProducer) produceApplicationEvent(ctx context.Context) {
 	event, err := events.NewApplicationEvent(ApplicationEventName, map[string]any{
 		"a": "alpha",
 		"b": 12345,
@@ -74,50 +75,7 @@ func (p *ApplicationEventProducer) produceEvent(ctx context.Context) {
 	}
 }
 
-type DomainEventProducer struct {
-	done      chan bool
-	eventRepo events.EventRepository
-	shutdown  chan bool
-}
-
-func NewDomainEventProducer(eventRepo events.EventRepository) *DomainEventProducer {
-	return &DomainEventProducer{
-		done:      make(chan bool, 1),
-		eventRepo: eventRepo,
-		shutdown:  make(chan bool, 1),
-	}
-}
-
-func (p *DomainEventProducer) Start(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-
-	for {
-		select {
-		case <-ticker.C:
-			p.produceEvent(ctx)
-
-		case <-p.shutdown:
-			p.done <- true
-			return
-		}
-	}
-}
-
-func (p *DomainEventProducer) Shutdown(ctx context.Context) error {
-	p.shutdown <- true
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-
-		case <-p.done:
-			return nil
-		}
-	}
-}
-
-func (p *DomainEventProducer) produceEvent(ctx context.Context) {
+func (p *EventProducer) produceDomainEvent(ctx context.Context) {
 	event, err := events.NewDomainEvent(
 		DomainEventName,
 		"gnarlyEntityID",

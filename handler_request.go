@@ -16,7 +16,7 @@ type HandlerRequest struct {
 	CorrelationID   string         // CorrelationID is a read-only field that is set by the storage layer.
 	Errors          int            // Errors indicates the number of execution attempts that resulted in errors.
 	EventData       map[string]any // The key/value pairs associated with the event.
-	EventEntityID   *string        // The event entity ID.
+	EventEntityID   string         // The event entity ID.
 	EventEntityName string         // The event entity name.
 	EventID         string         // The event ID.
 	EventName       EventName      // Name represents the event name.
