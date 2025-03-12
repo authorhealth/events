@@ -36,11 +36,8 @@ type BeforeProcessHook func(context.Context, *Event) (context.Context, *Event, e
 // For each event, it acquires a worker from a pool of workers. If no worker is available, it waits until one becomes available.
 // Once a worker is acquired, the event is processed. After processing, the worker is released back to the pool.
 //
-// The processing of an event involves running a set of handlers defined in the ConfigMap.
-// If any handler returns an error, the event is marked as failed.
-// If all handlers complete successfully, the event is marked as processed.
-//
-// The Processor also provides a Shutdown method to gracefully stop processing events.
+// The processing of an event involves creating handler execution requests for the event based on the set of handlers defined in the ConfigMap.
+// If the handler execution requests are created successfully, the event is marked as processed.
 type Processor struct {
 	beforeProcessHook          BeforeProcessHook
 	configMap                  ConfigMap

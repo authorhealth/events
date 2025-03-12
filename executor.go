@@ -53,8 +53,6 @@ type BeforeExecuteHook func(context.Context, *HandlerRequest) (context.Context, 
 // The execution of a handler request involves running a set of handlers defined in the ConfigMap.
 // If any handler returns an error, the request is marked as failed.
 // If all handlers complete successfully, the request is marked as executed.
-//
-// The Executor also provides a Shutdown method to gracefully stop executing requests.
 type Executor struct {
 	beforeExecuteHook          BeforeExecuteHook
 	configMap                  ConfigMap

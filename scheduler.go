@@ -6,6 +6,13 @@ import (
 	"time"
 )
 
+// Scheduler cooperatively schedules work for the Processor and the Executor.
+//
+// The Scheduler starts by calling the Processor to process events and create handler execution requests.
+// Then, the Scheduler calls the Executor to execute handler execution requests.
+// This quick succession helps minimize the gap between processing and execution.
+//
+// The Scheduler also provides a Shutdown method to gracefully stop scheduling work.
 type Scheduler struct {
 	done      chan bool
 	executor  *Executor
