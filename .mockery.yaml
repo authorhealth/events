@@ -1,5 +1,5 @@
 packages:
-  github.com/authorhealth/events:
+  github.com/authorhealth/events/v2:
     config:
       all: true
       dir: "{{ .InterfaceDir }}"
