@@ -1,5 +1,7 @@
 # events
 
+A framework for raising and processing domain and application events.
+
 ## Getting Started
 
 ```go
@@ -10,7 +12,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/authorhealth/events"
+	"github.com/authorhealth/events/v2"
 )
 
 func main() {
