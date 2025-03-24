@@ -27,6 +27,7 @@ updates:
           - "golang.org/x/*"
       otel:
         patterns:
+          - "go.opentelemetry.io/otel"
           - "go.opentelemetry.io/otel/*"
           - "go.opentelemetry.io/contrib/*"
     labels:
