@@ -312,7 +312,7 @@ func TestProcessor_no_handler(t *testing.T) {
 	assert.NotNil(fooUpdatedEvent.ProcessedAt)
 }
 
-func TestProcessor_Pause_Resume(t *testing.T) {
+func TestProcessor_Pause_Paused_Resume(t *testing.T) {
 	assert := assert.New(t)
 
 	duration := 100 * time.Millisecond
@@ -340,6 +340,8 @@ func TestProcessor_Pause_Resume(t *testing.T) {
 	assert.NoError(err)
 
 	p.Pause()
+
+	assert.True(p.Paused())
 
 	go func() {
 		err := p.Start(context.Background(), duration, limit)
@@ -402,6 +404,8 @@ func TestProcessor_Pause_Resume(t *testing.T) {
 	}).Once()
 
 	p.Resume()
+
+	assert.False(p.Paused())
 
 	wg.Wait()
 

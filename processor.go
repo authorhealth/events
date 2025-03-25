@@ -435,6 +435,10 @@ func (p *Processor) Pause() {
 	p.paused.Store(true)
 }
 
+func (p *Processor) Paused() bool {
+	return p.paused.Load()
+}
+
 func (p *Processor) Resume() {
 	p.paused.Store(false)
 }
