@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -46,6 +47,7 @@ type Processor struct {
 	meter                      metric.Meter
 	meterCallbackRegistrations []metric.Registration
 	numProcessorWorkers        int
+	paused                     atomic.Bool
 	repo                       Repository
 	shutdown                   chan bool
 	successCounter             metric.Int64Counter
@@ -147,7 +149,9 @@ func (p *Processor) Start(ctx context.Context, interval time.Duration, limit int
 	for {
 		select {
 		case <-ticker.C:
-			p.processEvents(ctx, limit)
+			if !p.paused.Load() {
+				p.processEvents(ctx, limit)
+			}
 
 		case <-p.shutdown:
 			return nil
@@ -425,4 +429,12 @@ func (p *Processor) unregisterMeterCallbacks() error {
 	p.meterCallbackRegistrations = nil
 
 	return nil
+}
+
+func (p *Processor) Pause() {
+	p.paused.Store(true)
+}
+
+func (p *Processor) Resume() {
+	p.paused.Store(false)
 }
