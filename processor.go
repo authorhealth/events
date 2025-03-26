@@ -40,27 +40,18 @@ type BeforeProcessHook func(context.Context, *Event) (context.Context, *Event, e
 type ProcessorStatus string
 
 const (
-	ProcessorStatusNotStarted       ProcessorStatus = "notStarted"
-	ProcessorStatusNotStartedPaused ProcessorStatus = "notStartedPaused"
-	ProcessorStatusRunning          ProcessorStatus = "running"
-	ProcessorStatusRunningPaused    ProcessorStatus = "runningPaused"
-	ProcessorStatusShutDown         ProcessorStatus = "shutDown"
+	ProcessorStatusNotStarted ProcessorStatus = "notStarted"
+	ProcessorStatusRunning    ProcessorStatus = "running"
+	ProcessorStatusPaused     ProcessorStatus = "paused"
+	ProcessorStatusShutdown   ProcessorStatus = "shutdown"
 )
 
 func (ps ProcessorStatus) String() string {
 	return string(ps)
 }
 
-func (ps ProcessorStatus) notStarted() bool {
-	return ps == ProcessorStatusNotStarted || ps == ProcessorStatusNotStartedPaused
-}
-
-func (ps ProcessorStatus) paused() bool {
-	return ps == ProcessorStatusNotStartedPaused || ps == ProcessorStatusRunningPaused
-}
-
-func (ps ProcessorStatus) running() bool {
-	return ps == ProcessorStatusRunning || ps == ProcessorStatusRunningPaused
+func (ps ProcessorStatus) operational() bool {
+	return ps == ProcessorStatusRunning || ps == ProcessorStatusPaused
 }
 
 type processorEvent string
@@ -68,7 +59,7 @@ type processorEvent string
 const (
 	processorEventPaused   processorEvent = "paused"
 	processorEventResumed  processorEvent = "resumed"
-	processorEventShutDown processorEvent = "shutDown"
+	processorEventShutdown processorEvent = "shutdown"
 	processorEventStarted  processorEvent = "started"
 )
 
@@ -180,7 +171,7 @@ func NewProcessor(
 }
 
 func (p *Processor) Start(ctx context.Context, interval time.Duration, limit int) error {
-	if !p.Status().notStarted() {
+	if p.Status() != ProcessorStatusNotStarted {
 		return errors.New("processor is already started")
 	}
 
@@ -390,13 +381,13 @@ func (p *Processor) processEvent(ctx context.Context, event *Event) {
 }
 
 func (p *Processor) Shutdown(ctx context.Context) error {
-	if !p.Status().running() {
+	if !p.Status().operational() {
 		return errors.New("processor is not running")
 	}
 
 	p.shutdown <- true
 
-	p.handleProcessorEvent(ctx, processorEventShutDown)
+	p.handleProcessorEvent(ctx, processorEventShutdown)
 
 	for {
 		select {
@@ -493,7 +484,7 @@ func (p *Processor) Pause(ctx context.Context) {
 }
 
 func (p *Processor) Paused() bool {
-	return p.Status().paused()
+	return p.Status() == ProcessorStatusPaused
 }
 
 func (p *Processor) Resume(ctx context.Context) {
@@ -518,36 +509,24 @@ func (p *Processor) handleProcessorEvent(ctx context.Context, event processorEve
 		switch event {
 		case processorEventStarted:
 			nextStatus = ProcessorStatusRunning
-
-		case processorEventPaused:
-			nextStatus = ProcessorStatusNotStartedPaused
-		}
-
-	case ProcessorStatusNotStartedPaused:
-		switch event {
-		case processorEventStarted:
-			nextStatus = ProcessorStatusRunningPaused
-
-		case processorEventResumed:
-			nextStatus = ProcessorStatusNotStarted
 		}
 
 	case ProcessorStatusRunning:
 		switch event {
 		case processorEventPaused:
-			nextStatus = ProcessorStatusRunningPaused
+			nextStatus = ProcessorStatusPaused
 
-		case processorEventShutDown:
-			nextStatus = ProcessorStatusShutDown
+		case processorEventShutdown:
+			nextStatus = ProcessorStatusShutdown
 		}
 
-	case ProcessorStatusRunningPaused:
+	case ProcessorStatusPaused:
 		switch event {
 		case processorEventResumed:
 			nextStatus = ProcessorStatusRunning
 
-		case processorEventShutDown:
-			nextStatus = ProcessorStatusShutDown
+		case processorEventShutdown:
+			nextStatus = ProcessorStatusShutdown
 		}
 	}
 
@@ -558,8 +537,8 @@ func (p *Processor) handleProcessorEvent(ctx context.Context, event processorEve
 	previousStatus := p.status
 	p.status = nextStatus
 
-	// Keep track of the number of running event processors and their state (i.e., paused or not paused).
-	if previousStatus.running() {
+	// Keep track of the number of operational event processors and their state (i.e., running or paused).
+	if previousStatus.operational() {
 		p.statusUpDownCounter.Add(
 			ctx,
 			-1,
@@ -574,7 +553,7 @@ func (p *Processor) handleProcessorEvent(ctx context.Context, event processorEve
 		)
 	}
 
-	if p.status.running() {
+	if p.status.operational() {
 		p.statusUpDownCounter.Add(
 			ctx,
 			1,

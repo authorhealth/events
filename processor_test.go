@@ -329,7 +329,18 @@ func TestProcessor_Pause_Paused_Resume_Status(t *testing.T) {
 			interval := 100 * time.Millisecond
 			limit := 5
 
+			eventsC := make(chan []*Event, 1)
+
 			eventRepo := NewMockRepository(t)
+			eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).RunAndReturn(func(_ context.Context, _ int) ([]*Event, error) {
+				select {
+				case events := <-eventsC:
+					return events, nil
+
+				default:
+					return nil, nil
+				}
+			})
 
 			fooSuccessHandler := NewHandler("success", "", func(ctx context.Context, e *Event) error {
 				return nil
@@ -354,41 +365,23 @@ func TestProcessor_Pause_Paused_Resume_Status(t *testing.T) {
 			assert.False(processor.Paused())
 			assert.Equal(ProcessorStatusNotStarted, processor.Status())
 
-			// Act/Assert - Processor not started - paused
-			processor.Pause(context.Background())
-
-			assert.True(processor.Paused())
-			assert.Equal(ProcessorStatusNotStartedPaused, processor.Status())
-
-			// Act/Assert - Processor not started - paused (idempotent)
-			processor.Pause(context.Background())
-
-			assert.True(processor.Paused())
-			assert.Equal(ProcessorStatusNotStartedPaused, processor.Status())
-
-			// Act/Assert - Processor not started - resumed
-			processor.Resume(context.Background())
-
-			assert.False(processor.Paused())
-			assert.Equal(ProcessorStatusNotStarted, processor.Status())
-
-			// Act/Assert - Processor not started - paused
-			processor.Pause(context.Background())
-
-			assert.True(processor.Paused())
-			assert.Equal(ProcessorStatusNotStartedPaused, processor.Status())
-
-			// Act/Assert - Processor running - paused
+			// Act/Assert - Processor running - no events available
 			go func() {
 				err := processor.Start(context.Background(), interval, limit)
 				assert.NoError(err)
 			}()
 
-			time.Sleep(10 * time.Millisecond) // Sleep for a couple of ms to ensure that the processor has started.
+			time.Sleep(3 * interval) // Sleep for a couple of ticks to ensure the processor has had time to run.
 
-			assert.Equal(ProcessorStatusRunningPaused, processor.Status())
+			assert.False(processor.Paused())
+			assert.Equal(ProcessorStatusRunning, processor.Status())
 
-			// Arrange - Processor running - resumed
+			// Act/Assert - Processor paused - no events available
+			processor.Pause(context.Background())
+			assert.True(processor.Paused())
+			assert.Equal(ProcessorStatusPaused, processor.Status())
+
+			// Arrange - Processor paused - events available
 			entityID := uuid.New().String()
 
 			fooUpdatedEvent, err := NewApplicationEvent("fooUpdated", map[string]any{"key": "val"})
@@ -404,44 +397,38 @@ func TestProcessor_Pause_Paused_Resume_Status(t *testing.T) {
 				barUpdatedEvent,
 			}
 
-			eventRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.Repository) error")).RunAndReturn(func(ctx context.Context, f func(Repository) error) error {
-				err := f(eventRepo)
-				assert.NoError(err)
+			// Act - Processor paused - events available
+			time.Sleep(3 * interval) // Sleep for a couple of ticks to ensure the processor has had time to run.
 
-				return nil
-			})
+			eventsC <- events
 
-			eventRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.Repository) error")).RunAndReturn(func(ctx context.Context, f func(Repository) error) error {
-				err := f(eventRepo)
-				assert.NoError(err)
+			time.Sleep(3 * interval) // Sleep for a couple of ticks to ensure the processor has had time to run.
 
-				return nil
-			})
-
-			eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return(events, nil).Once()
-			eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return([]*Event{}, nil)
-
-			eventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedEvent.ID, true).Return(fooUpdatedEvent, nil).Once()
-			eventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, barUpdatedEvent.ID, true).Return(barUpdatedEvent, nil).Once()
-
+			// Arrange - Processor resumed - events available
 			var wg sync.WaitGroup
 			wg.Add(len(events))
 
-			eventRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(e *Event) bool {
+			txEventRepo := NewMockRepository(t)
+			txEventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedEvent.ID, true).Return(fooUpdatedEvent, nil).Once()
+			txEventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, barUpdatedEvent.ID, true).Return(barUpdatedEvent, nil).Once()
+			txEventRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(e *Event) bool {
 				return e.ID == fooUpdatedEvent.ID
 			})).RunAndReturn(func(ctx context.Context, e *Event) error {
 				wg.Done()
 				return nil
 			}).Once()
-
-			eventRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(e *Event) bool {
+			txEventRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(e *Event) bool {
 				return e.ID == barUpdatedEvent.ID
 			})).RunAndReturn(func(ctx context.Context, e *Event) error {
 				wg.Done()
 				return nil
 			}).Once()
 
-			// Act/Assert - Processor running - resumed
+			eventRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.Repository) error")).RunAndReturn(func(ctx context.Context, f func(Repository) error) error {
+				return f(txEventRepo)
+			})
+
+			// Act - Processor resumed - events available
 			processor.Resume(context.Background())
 
 			assert.False(processor.Paused())
@@ -458,17 +445,23 @@ func TestProcessor_Pause_Paused_Resume_Status(t *testing.T) {
 			assert.Error(barUpdatedEvent.HandlerResults["failure"].LastError)
 
 			if testCase.pauseAfterProcessing {
-				// Act/Assert - Processor running - paused
+				// Act/Assert - Processor paused
 				processor.Pause(context.Background())
 
 				assert.True(processor.Paused())
-				assert.Equal(ProcessorStatusRunningPaused, processor.Status())
+				assert.Equal(ProcessorStatusPaused, processor.Status())
+
+				// Act/Assert - Processor paused (idempotent)
+				processor.Pause(context.Background())
+
+				assert.True(processor.Paused())
+				assert.Equal(ProcessorStatusPaused, processor.Status())
 			}
 
 			err = processor.Shutdown(context.Background())
 			assert.NoError(err)
 
-			assert.Equal(ProcessorStatusShutDown, processor.Status())
+			assert.Equal(ProcessorStatusShutdown, processor.Status())
 		})
 	}
 }
