@@ -382,7 +382,7 @@ func (p *Processor) processEvent(ctx context.Context, event *Event) {
 
 func (p *Processor) Shutdown(ctx context.Context) error {
 	if !p.Status().operational() {
-		return errors.New("processor is not running")
+		return errors.New("processor is not operational")
 	}
 
 	p.shutdown <- true
@@ -477,6 +477,10 @@ func (p *Processor) unregisterMeterCallbacks() error {
 	p.meterCallbackRegistrations = nil
 
 	return nil
+}
+
+func (p *Processor) Operational() bool {
+	return p.Status().operational()
 }
 
 func (p *Processor) Pause(ctx context.Context) {

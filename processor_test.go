@@ -312,7 +312,7 @@ func TestProcessor_no_handler(t *testing.T) {
 	assert.NotNil(fooUpdatedEvent.ProcessedAt)
 }
 
-func TestProcessor_Pause_Paused_Resume_Status(t *testing.T) {
+func TestProcessor_Operational_Pause_Paused_Resume_Status(t *testing.T) {
 	testCases := map[string]struct {
 		pauseAfterProcessing bool
 	}{
@@ -362,6 +362,7 @@ func TestProcessor_Pause_Paused_Resume_Status(t *testing.T) {
 			processor, err := NewProcessor(eventRepo, eventMap, nil, "", 2)
 
 			assert.NoError(err)
+			assert.False(processor.Operational())
 			assert.False(processor.Paused())
 			assert.Equal(ProcessorStatusNotStarted, processor.Status())
 
@@ -374,10 +375,12 @@ func TestProcessor_Pause_Paused_Resume_Status(t *testing.T) {
 			time.Sleep(3 * interval) // Sleep for a couple of ticks to ensure the processor has had time to run.
 
 			assert.False(processor.Paused())
+			assert.True(processor.Operational())
 			assert.Equal(ProcessorStatusRunning, processor.Status())
 
 			// Act/Assert - Processor paused - no events available
 			processor.Pause(context.Background())
+			assert.True(processor.Operational())
 			assert.True(processor.Paused())
 			assert.Equal(ProcessorStatusPaused, processor.Status())
 
@@ -431,6 +434,7 @@ func TestProcessor_Pause_Paused_Resume_Status(t *testing.T) {
 			// Act - Processor resumed - events available
 			processor.Resume(context.Background())
 
+			assert.True(processor.Operational())
 			assert.False(processor.Paused())
 			assert.Equal(ProcessorStatusRunning, processor.Status())
 
@@ -448,12 +452,14 @@ func TestProcessor_Pause_Paused_Resume_Status(t *testing.T) {
 				// Act/Assert - Processor paused
 				processor.Pause(context.Background())
 
+				assert.True(processor.Operational())
 				assert.True(processor.Paused())
 				assert.Equal(ProcessorStatusPaused, processor.Status())
 
 				// Act/Assert - Processor paused (idempotent)
 				processor.Pause(context.Background())
 
+				assert.True(processor.Operational())
 				assert.True(processor.Paused())
 				assert.Equal(ProcessorStatusPaused, processor.Status())
 			}
@@ -461,6 +467,8 @@ func TestProcessor_Pause_Paused_Resume_Status(t *testing.T) {
 			err = processor.Shutdown(context.Background())
 			assert.NoError(err)
 
+			assert.False(processor.Operational())
+			assert.False(processor.Paused())
 			assert.Equal(ProcessorStatusShutdown, processor.Status())
 		})
 	}
@@ -536,7 +544,7 @@ func TestProcessor_Shutdown_not_running(t *testing.T) {
 			err = processor.Shutdown(context.Background())
 
 			// Assert
-			assert.EqualError(err, "processor is not running")
+			assert.EqualError(err, "processor is not operational")
 		})
 	}
 }
@@ -568,5 +576,5 @@ func TestProcessor_Shutdown_already_shut_down(t *testing.T) {
 	err = processor.Shutdown(context.Background())
 
 	// Assert
-	assert.EqualError(err, "processor is not running")
+	assert.EqualError(err, "processor is not operational")
 }
