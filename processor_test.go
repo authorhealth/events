@@ -311,3 +311,112 @@ func TestProcessor_no_handler(t *testing.T) {
 
 	assert.NotNil(fooUpdatedEvent.ProcessedAt)
 }
+
+func TestProcessor_Pause_Paused_Resume(t *testing.T) {
+	assert := assert.New(t)
+
+	duration := 100 * time.Millisecond
+	limit := 5
+
+	eventRepo := NewMockRepository(t)
+
+	fooSuccessHandler := NewHandler("success", "", func(ctx context.Context, e *Event) error {
+		return nil
+	})
+
+	barSuccessHandler := NewHandler("success", "", func(ctx context.Context, e *Event) error {
+		return nil
+	})
+
+	barFailureHandler := NewHandler("failure", "", func(ctx context.Context, e *Event) error {
+		return errors.New("handler error")
+	})
+
+	eventMap := ConfigMap{}
+	eventMap.AddHandlers("fooUpdated", fooSuccessHandler)
+	eventMap.AddHandlers("barUpdated", barSuccessHandler, barFailureHandler)
+
+	p, err := NewProcessor(eventRepo, eventMap, nil, "", 2)
+	assert.NoError(err)
+
+	p.Pause()
+
+	assert.True(p.Paused())
+
+	go func() {
+		err := p.Start(context.Background(), duration, limit)
+		assert.NoError(err)
+	}()
+
+	// Sleep for a couple of ticks to ensure that the processing has been paused.
+	time.Sleep(5 * duration)
+
+	entityID := uuid.New().String()
+
+	fooUpdatedEvent, err := NewApplicationEvent("fooUpdated", map[string]any{"key": "val"})
+	assert.NoError(err)
+	fooUpdatedEvent.EntityID = &entityID
+
+	barUpdatedEvent, err := NewApplicationEvent("barUpdated", map[string]any{"key": "val"})
+	assert.NoError(err)
+	barUpdatedEvent.EntityID = &entityID
+
+	events := []*Event{
+		fooUpdatedEvent,
+		barUpdatedEvent,
+	}
+
+	eventRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.Repository) error")).RunAndReturn(func(ctx context.Context, f func(Repository) error) error {
+		err := f(eventRepo)
+		assert.NoError(err)
+
+		return nil
+	})
+
+	eventRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.Repository) error")).RunAndReturn(func(ctx context.Context, f func(Repository) error) error {
+		err := f(eventRepo)
+		assert.NoError(err)
+
+		return nil
+	})
+
+	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return(events, nil).Once()
+	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return([]*Event{}, nil)
+
+	eventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedEvent.ID, true).Return(fooUpdatedEvent, nil).Once()
+	eventRepo.EXPECT().FindByIDForUpdate(ctxMatcher, barUpdatedEvent.ID, true).Return(barUpdatedEvent, nil).Once()
+
+	var wg sync.WaitGroup
+	wg.Add(len(events))
+
+	eventRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(e *Event) bool {
+		return e.ID == fooUpdatedEvent.ID
+	})).RunAndReturn(func(ctx context.Context, e *Event) error {
+		wg.Done()
+		return nil
+	}).Once()
+
+	eventRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(e *Event) bool {
+		return e.ID == barUpdatedEvent.ID
+	})).RunAndReturn(func(ctx context.Context, e *Event) error {
+		wg.Done()
+		return nil
+	}).Once()
+
+	p.Resume()
+
+	assert.False(p.Paused())
+
+	wg.Wait()
+
+	err = p.Shutdown(context.Background())
+	assert.NoError(err)
+
+	assert.NotNil(fooUpdatedEvent.ProcessedAt)
+
+	assert.Nil(barUpdatedEvent.ProcessedAt)
+	assert.NotNil(barUpdatedEvent.HandlerResults["success"].ProcessedAt)
+
+	assert.Nil(barUpdatedEvent.HandlerResults["failure"].ProcessedAt)
+	assert.Error(barUpdatedEvent.HandlerResults["failure"].LastError)
+}
