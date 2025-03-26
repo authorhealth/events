@@ -558,7 +558,7 @@ func (p *Processor) handleProcessorEvent(ctx context.Context, event processorEve
 	previousStatus := p.status
 	p.status = nextStatus
 
-	// Keep track of the number of running event processors and their state (e.g., paused).
+	// Keep track of the number of running event processors and their state (i.e., paused or not paused).
 	if previousStatus.running() {
 		p.statusUpDownCounter.Add(
 			ctx,
