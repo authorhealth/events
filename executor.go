@@ -61,8 +61,8 @@ type Executor struct {
 	meter                      metric.Meter
 	meterCallbackRegistrations []metric.Registration
 	numExecutorWorkers         int
-	repo                       HandlerRequestRepository
 	shutdown                   chan bool
+	store                      Storer
 	successCounter             metric.Int64Counter
 	telemetryPrefix            string
 	timeHistogram              metric.Float64Histogram
@@ -89,7 +89,7 @@ type Executor struct {
 // numExecutorWorkers configures the number of worker goroutines that execute
 // requests. If numExecutorWorkers is <= 0, it defaults to 2.
 func NewExecutor(
-	repo HandlerRequestRepository,
+	store Storer,
 	conf ConfigMap,
 	beforeExecuteHook BeforeExecuteHook,
 	telemetryPrefix string,
@@ -104,7 +104,7 @@ func NewExecutor(
 		configMap:          conf,
 		meter:              otel.GetMeterProvider().Meter("github.com/authorhealth/events/v2"),
 		numExecutorWorkers: numExecutorWorkers,
-		repo:               repo,
+		store:              store,
 		telemetryPrefix:    telemetryPrefix,
 		shutdown:           make(chan bool, 1),
 		tracer:             otel.GetTracerProvider().Tracer("github.com/authorhealth/events/v2"),
@@ -183,7 +183,7 @@ func (e *Executor) executeRequests(ctx context.Context, limit int) {
 	ctx, span := e.tracer.Start(ctx, "execute requests")
 	defer span.End()
 
-	requests, err := e.repo.FindUnexecuted(ctx, limit)
+	requests, err := e.store.HandlerRequests().FindUnexecuted(ctx, limit)
 	if err != nil {
 		slog.ErrorContext(ctx, "error finding unexecuted requests", Err(err))
 		span.RecordError(err)
@@ -254,8 +254,8 @@ func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) 
 		return
 	}
 
-	err = e.repo.Transaction(ctx, func(txRepo HandlerRequestRepository) error {
-		request, err := txRepo.FindByIDForUpdate(ctx, request.ID, true)
+	err = e.store.Transaction(ctx, func(txStore Storer) error {
+		request, err := txStore.HandlerRequests().FindByIDForUpdate(ctx, request.ID, true)
 		if err != nil {
 			// Locked rows are skipped, so do not error on not found.
 			if errors.Is(err, ErrNotFound) {
@@ -312,7 +312,7 @@ func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) 
 			e.successCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
 		}
 
-		err = txRepo.Update(ctx, request)
+		err = txStore.HandlerRequests().Update(ctx, request)
 		if err != nil {
 			return fmt.Errorf("updating %s request: %w", request.HandlerName, err)
 		}
@@ -333,7 +333,7 @@ func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) 
 func (p *Executor) registerMeterCallbacks() error {
 	var registrations []metric.Registration
 	registration, err := p.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
-		count, err := p.repo.CountUnexecuted(ctx)
+		count, err := p.store.HandlerRequests().CountUnexecuted(ctx)
 		if err != nil {
 			return fmt.Errorf("counting unexecuted requests: %w", err)
 		}
@@ -349,7 +349,7 @@ func (p *Executor) registerMeterCallbacks() error {
 	registrations = append(registrations, registration)
 
 	registration, err = p.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
-		oldest, err := p.repo.FindOldestUnexecuted(ctx)
+		oldest, err := p.store.HandlerRequests().FindOldestUnexecuted(ctx)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				o.ObserveFloat64(p.unexecutedMaxAgeGauge, 0)
@@ -371,7 +371,7 @@ func (p *Executor) registerMeterCallbacks() error {
 	registrations = append(registrations, registration)
 
 	registration, err = p.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
-		count, err := p.repo.CountDead(ctx)
+		count, err := p.store.HandlerRequests().CountDead(ctx)
 		if err != nil {
 			return fmt.Errorf("counting dead requests: %w", err)
 		}

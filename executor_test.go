@@ -46,12 +46,18 @@ func TestExecutor_executeRequests(t *testing.T) {
 			assert.Error(r.LastError)
 	})).Return(nil).Once()
 
+	txStore := NewMockStorer(t)
+	txStore.EXPECT().HandlerRequests().Return(txHandlerRequestRepo)
+
 	handlerRequestRepo := NewMockHandlerRequestRepository(t)
 	handlerRequestRepo.EXPECT().FindUnexecuted(ctxMatcher, limit).Return(requests, nil).Once()
 	handlerRequestRepo.EXPECT().FindUnexecuted(ctxMatcher, limit).Return([]*HandlerRequest{}, nil).Maybe()
-	handlerRequestRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.HandlerRequestRepository) error")).RunAndReturn(func(ctx context.Context, f func(HandlerRequestRepository) error) error {
-		return f(txHandlerRequestRepo)
-	}).Twice()
+
+	store := NewMockStorer(t)
+	store.EXPECT().HandlerRequests().Return(handlerRequestRepo)
+	store.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.Storer) error")).RunAndReturn(func(ctx context.Context, f func(Storer) error) error {
+		return f(txStore)
+	})
 
 	fooUpdatedHandler := NewHandler(fooUpdatedHandlerName, "", func(ctx context.Context, r *HandlerRequest) error {
 		return nil
@@ -66,7 +72,7 @@ func TestExecutor_executeRequests(t *testing.T) {
 		WithEvent(barUpdatedEventName, WithHandler(barUpdatedHandler)),
 	)
 
-	e, err := NewExecutor(handlerRequestRepo, eventMap, nil, "", 2)
+	e, err := NewExecutor(store, eventMap, nil, "", 2)
 	assert.NoError(err)
 
 	e.executeRequests(context.Background(), limit)
@@ -95,12 +101,18 @@ func TestExecutor_executeRequests_not_found(t *testing.T) {
 	txHandlerRequestRepo := NewMockHandlerRequestRepository(t)
 	txHandlerRequestRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedHandlerRequest.ID, true).Return(nil, ErrNotFound)
 
+	txStore := NewMockStorer(t)
+	txStore.EXPECT().HandlerRequests().Return(txHandlerRequestRepo)
+
 	handlerRequestRepo := NewMockHandlerRequestRepository(t)
 	handlerRequestRepo.EXPECT().FindUnexecuted(ctxMatcher, limit).Return(requests, nil).Once()
 	handlerRequestRepo.EXPECT().FindUnexecuted(ctxMatcher, limit).Return([]*HandlerRequest{}, nil).Maybe()
-	handlerRequestRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.HandlerRequestRepository) error")).RunAndReturn(func(ctx context.Context, f func(HandlerRequestRepository) error) error {
-		return f(txHandlerRequestRepo)
-	}).Once()
+
+	store := NewMockStorer(t)
+	store.EXPECT().HandlerRequests().Return(handlerRequestRepo)
+	store.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.Storer) error")).RunAndReturn(func(ctx context.Context, f func(Storer) error) error {
+		return f(txStore)
+	})
 
 	fooUpdatedHandler := NewHandler(fooUpdatedHandlerName, "", func(ctx context.Context, r *HandlerRequest) error {
 		assert.Fail("should not have been called")
@@ -111,7 +123,7 @@ func TestExecutor_executeRequests_not_found(t *testing.T) {
 		WithEvent(fooUpdatedEventName, WithHandler(fooUpdatedHandler)),
 	)
 
-	e, err := NewExecutor(handlerRequestRepo, eventMap, nil, "", 2)
+	e, err := NewExecutor(store, eventMap, nil, "", 2)
 	assert.NoError(err)
 
 	e.executeRequests(context.Background(), limit)
@@ -142,12 +154,18 @@ func TestExecutor_executeRequests_already_executed(t *testing.T) {
 	txHandlerRequestRepo := NewMockHandlerRequestRepository(t)
 	txHandlerRequestRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedHandlerRequest.ID, true).Return(fooUpdatedHandlerRequest, nil)
 
+	txStore := NewMockStorer(t)
+	txStore.EXPECT().HandlerRequests().Return(txHandlerRequestRepo)
+
 	handlerRequestRepo := NewMockHandlerRequestRepository(t)
 	handlerRequestRepo.EXPECT().FindUnexecuted(ctxMatcher, limit).Return(requests, nil).Once()
 	handlerRequestRepo.EXPECT().FindUnexecuted(ctxMatcher, limit).Return([]*HandlerRequest{}, nil).Maybe()
-	handlerRequestRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.HandlerRequestRepository) error")).RunAndReturn(func(ctx context.Context, f func(HandlerRequestRepository) error) error {
-		return f(txHandlerRequestRepo)
-	}).Once()
+
+	store := NewMockStorer(t)
+	store.EXPECT().HandlerRequests().Return(handlerRequestRepo)
+	store.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.Storer) error")).RunAndReturn(func(ctx context.Context, f func(Storer) error) error {
+		return f(txStore)
+	})
 
 	fooUpdatedHandler := NewHandler(fooUpdatedHandlerName, "", func(ctx context.Context, r *HandlerRequest) error {
 		assert.Fail("should not have been called")
@@ -158,7 +176,7 @@ func TestExecutor_executeRequests_already_executed(t *testing.T) {
 		WithEvent(fooUpdatedEventName, WithHandler(fooUpdatedHandler)),
 	)
 
-	e, err := NewExecutor(handlerRequestRepo, eventMap, nil, "", 2)
+	e, err := NewExecutor(store, eventMap, nil, "", 2)
 	assert.NoError(err)
 
 	e.executeRequests(context.Background(), limit)

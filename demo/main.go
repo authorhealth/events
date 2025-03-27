@@ -48,8 +48,8 @@ func main() {
 
 	otel.SetTracerProvider(tracerProvider)
 
-	eventRepo := NewEventRepository()
-	handlerRequestRepo := NewHandlerRequestRepository()
+	db := NewDatabase()
+	store := NewStore(db)
 
 	configMap := events.NewConfigMap(
 		events.WithEvent(ApplicationEventName,
@@ -61,21 +61,20 @@ func main() {
 		),
 	)
 
-	eventProducer := NewEventProducer(eventRepo)
+	eventProducer := NewEventProducer(store.Events())
 	go func() {
 		slog.Info("starting event producer", "interval", eventProducerInterval)
 		eventProducer.Start(ctx, eventProducerInterval)
 	}()
 
-	eventSystemReporter := NewEventSystemReporter(eventRepo, handlerRequestRepo)
+	eventSystemReporter := NewEventSystemReporter(store)
 	go func() {
 		slog.Info("starting event system reporter", "interval", eventSystemReporterInterval)
 		eventSystemReporter.Start(ctx, eventSystemReporterInterval)
 	}()
 
 	eventProcessor, err := events.NewProcessor(
-		eventRepo,
-		handlerRequestRepo,
+		store,
 		configMap,
 		nil,
 		"demo",
@@ -87,7 +86,7 @@ func main() {
 	}
 
 	eventExecutor, err := events.NewExecutor(
-		handlerRequestRepo,
+		store,
 		configMap,
 		nil,
 		"demo",

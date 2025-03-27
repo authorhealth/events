@@ -8,9 +8,14 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
-type EventRepository interface {
-	Transaction(ctx context.Context, fn func(txRepo EventRepository) error) error
+type Storer interface {
+	Transaction(ctx context.Context, fn func(txStore Storer) error) error
 
+	Events() EventRepository
+	HandlerRequests() HandlerRequestRepository
+}
+
+type EventRepository interface {
 	CountUnprocessed(ctx context.Context) (int, error)
 	Create(ctx context.Context, event *Event) error
 	Find(ctx context.Context) iter.Seq2[*Event, error]
@@ -22,8 +27,6 @@ type EventRepository interface {
 }
 
 type HandlerRequestRepository interface {
-	Transaction(ctx context.Context, fn func(txRepo HandlerRequestRepository) error) error
-
 	CountDead(ctx context.Context) (int, error)
 	CountUnexecuted(ctx context.Context) (int, error)
 	Create(ctx context.Context, handlerRequest *HandlerRequest) error

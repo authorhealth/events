@@ -55,9 +55,6 @@ func TestScheduler(t *testing.T) {
 	eventRepo := NewMockEventRepository(t)
 	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return(events, nil).Once()
 	eventRepo.EXPECT().FindUnprocessed(ctxMatcher, limit).Return([]*Event{}, nil).Maybe()
-	eventRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.EventRepository) error")).RunAndReturn(func(ctx context.Context, f func(EventRepository) error) error {
-		return f(txEventRepo)
-	})
 
 	var fooUpdatedHandlerRequest *HandlerRequest
 	var barUpdatedHandlerRequest *HandlerRequest
@@ -115,9 +112,17 @@ func TestScheduler(t *testing.T) {
 		}, nil
 	}).Once()
 	handlerRequestRepo.EXPECT().FindUnexecuted(ctxMatcher, limit).Return([]*HandlerRequest{}, nil).Maybe()
-	handlerRequestRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.HandlerRequestRepository) error")).RunAndReturn(func(ctx context.Context, f func(HandlerRequestRepository) error) error {
-		return f(txHandlerRequestRepo)
-	}).Times(4)
+
+	txStore := NewMockStorer(t)
+	txStore.EXPECT().Events().Return(txEventRepo)
+	txStore.EXPECT().HandlerRequests().Return(txHandlerRequestRepo)
+
+	store := NewMockStorer(t)
+	store.EXPECT().Events().Return(eventRepo)
+	store.EXPECT().HandlerRequests().Return(handlerRequestRepo)
+	store.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.Storer) error")).RunAndReturn(func(ctx context.Context, f func(Storer) error) error {
+		return f(txStore)
+	})
 
 	fooUpdatedHandler := NewHandler(fooUpdatedHandlerName, "", func(ctx context.Context, r *HandlerRequest) error {
 		return nil
@@ -132,10 +137,10 @@ func TestScheduler(t *testing.T) {
 		WithEvent(barUpdatedEventName, WithHandler(barUpdatedHandler)),
 	)
 
-	processor, err := NewProcessor(eventRepo, handlerRequestRepo, eventMap, nil, "", 2)
+	processor, err := NewProcessor(store, eventMap, nil, "", 2)
 	assert.NoError(err)
 
-	executor, err := NewExecutor(handlerRequestRepo, eventMap, nil, "", 2)
+	executor, err := NewExecutor(store, eventMap, nil, "", 2)
 	assert.NoError(err)
 
 	scheduler, err := NewScheduler(executor, processor)
@@ -206,10 +211,14 @@ func TestScheduler_Operational_Pause_Paused_Resume_Status(t *testing.T) {
 				WithEvent(barUpdatedEventName, WithHandler(barUpdatedHandler)),
 			)
 
-			processor, err := NewProcessor(eventRepo, handlerRequestRepo, eventMap, nil, "", 2)
+			store := NewMockStorer(t)
+			store.EXPECT().Events().Return(eventRepo)
+			store.EXPECT().HandlerRequests().Return(handlerRequestRepo)
+
+			processor, err := NewProcessor(store, eventMap, nil, "", 2)
 			assert.NoError(err)
 
-			executor, err := NewExecutor(handlerRequestRepo, eventMap, nil, "", 2)
+			executor, err := NewExecutor(store, eventMap, nil, "", 2)
 			assert.NoError(err)
 
 			// Act/Assert - Scheduler not started
@@ -281,10 +290,6 @@ func TestScheduler_Operational_Pause_Paused_Resume_Status(t *testing.T) {
 				return nil
 			}).Once()
 
-			eventRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.EventRepository) error")).RunAndReturn(func(ctx context.Context, f func(EventRepository) error) error {
-				return f(txEventRepo)
-			})
-
 			var fooUpdatedHandlerRequest *HandlerRequest
 			var barUpdatedHandlerRequest *HandlerRequest
 
@@ -335,9 +340,13 @@ func TestScheduler_Operational_Pause_Paused_Resume_Status(t *testing.T) {
 				return nil
 			}).Once()
 
-			handlerRequestRepo.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.HandlerRequestRepository) error")).RunAndReturn(func(ctx context.Context, f func(HandlerRequestRepository) error) error {
-				return f(txHandlerRequestRepo)
-			}).Times(4)
+			txStore := NewMockStorer(t)
+			txStore.EXPECT().Events().Return(txEventRepo)
+			txStore.EXPECT().HandlerRequests().Return(txHandlerRequestRepo)
+
+			store.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.Storer) error")).RunAndReturn(func(ctx context.Context, f func(Storer) error) error {
+				return f(txStore)
+			})
 
 			// Act - Scheduler resumed - events available
 			scheduler.Resume(context.Background())
@@ -397,10 +406,14 @@ func TestScheduler_Start_already_started(t *testing.T) {
 			handlerRequestRepo := NewMockHandlerRequestRepository(t)
 			handlerRequestRepo.EXPECT().FindUnexecuted(ctxMatcher, limit).Return(nil, nil).Maybe()
 
-			processor, err := NewProcessor(eventRepo, handlerRequestRepo, nil, nil, "", 2)
+			store := NewMockStorer(t)
+			store.EXPECT().Events().Return(eventRepo).Maybe()
+			store.EXPECT().HandlerRequests().Return(handlerRequestRepo).Maybe()
+
+			processor, err := NewProcessor(store, nil, nil, "", 2)
 			assert.NoError(err)
 
-			executor, err := NewExecutor(handlerRequestRepo, nil, nil, "", 2)
+			executor, err := NewExecutor(store, nil, nil, "", 2)
 			assert.NoError(err)
 
 			scheduler, err := NewScheduler(executor, processor)
@@ -440,14 +453,12 @@ func TestScheduler_Shutdown_not_running(t *testing.T) {
 			assert := assert.New(t)
 
 			// Arrange
-			eventRepo := NewMockEventRepository(t)
+			store := NewMockStorer(t)
 
-			handlerRequestRepo := NewMockHandlerRequestRepository(t)
-
-			processor, err := NewProcessor(eventRepo, handlerRequestRepo, nil, nil, "", 2)
+			processor, err := NewProcessor(store, nil, nil, "", 2)
 			assert.NoError(err)
 
-			executor, err := NewExecutor(handlerRequestRepo, nil, nil, "", 2)
+			executor, err := NewExecutor(store, nil, nil, "", 2)
 			assert.NoError(err)
 
 			scheduler, err := NewScheduler(executor, processor)
@@ -479,10 +490,14 @@ func TestScheduler_Shutdown_already_shut_down(t *testing.T) {
 	handlerRequestRepo := NewMockHandlerRequestRepository(t)
 	handlerRequestRepo.EXPECT().FindUnexecuted(ctxMatcher, limit).Return(nil, nil).Maybe()
 
-	processor, err := NewProcessor(eventRepo, handlerRequestRepo, nil, nil, "", 2)
+	store := NewMockStorer(t)
+	store.EXPECT().Events().Return(eventRepo).Maybe()
+	store.EXPECT().HandlerRequests().Return(handlerRequestRepo).Maybe()
+
+	processor, err := NewProcessor(store, nil, nil, "", 2)
 	assert.NoError(err)
 
-	executor, err := NewExecutor(handlerRequestRepo, nil, nil, "", 2)
+	executor, err := NewExecutor(store, nil, nil, "", 2)
 	assert.NoError(err)
 
 	scheduler, err := NewScheduler(executor, processor)
