@@ -271,14 +271,12 @@ func (p *Processor) processEvent(ctx context.Context, event *Event) {
 			requests = append(requests, request)
 		}
 
-		if len(requests) > 0 {
-			for _, request := range requests {
-				err := retry.Do(func() error {
-					return txStore.HandlerRequests().Create(ctx, request)
-				})
-				if err != nil {
-					return fmt.Errorf("creating handler request: %w", err)
-				}
+		for _, request := range requests {
+			err := retry.Do(func() error {
+				return txStore.HandlerRequests().Create(ctx, request)
+			})
+			if err != nil {
+				return fmt.Errorf("creating handler request: %w", err)
 			}
 		}
 
