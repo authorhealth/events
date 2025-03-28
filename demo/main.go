@@ -100,6 +100,7 @@ func main() {
 	eventScheduler, err := events.NewScheduler(
 		eventExecutor,
 		eventProcessor,
+		"demo",
 	)
 	if err != nil {
 		slog.Error("error constructing event scheduler", events.Err(err))

@@ -60,14 +60,16 @@ type Scheduler struct {
 func NewScheduler(
 	executor *Executor,
 	processor *Processor,
+	telemetryPrefix string,
 ) (*Scheduler, error) {
 	s := &Scheduler{
-		done:      make(chan bool, 1),
-		meter:     otel.GetMeterProvider().Meter("github.com/authorhealth/events/v2"),
-		executor:  executor,
-		processor: processor,
-		shutdown:  make(chan bool, 1),
-		status:    SchedulerStatusNotStarted,
+		done:            make(chan bool, 1),
+		meter:           otel.GetMeterProvider().Meter("github.com/authorhealth/events/v2"),
+		executor:        executor,
+		processor:       processor,
+		shutdown:        make(chan bool, 1),
+		status:          SchedulerStatusNotStarted,
+		telemetryPrefix: telemetryPrefix,
 	}
 
 	var err error
