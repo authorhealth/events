@@ -26,12 +26,12 @@ var ErrRetryable = errors.New("event failed to process but is retryable")
 // If an error is returned, the event will not be processed.
 type BeforeProcessHook func(context.Context, *Event) (context.Context, *Event, error)
 
-// Processor provides a way to process events from an EventRepository.
+// Processor provides a way to process events from a Storer.
 // It uses a configurable number of worker goroutines to process events concurrently.
 // Before processing, a BeforeProcessHook can be used to modify the event or context.
 // The Processor also provides metrics for monitoring the processing of events.
 //
-// The Processor starts by retrieving unprocessed events from the Repository.
+// The Processor starts by retrieving unprocessed events from the Storer.
 // For each event, it acquires a worker from a pool of workers. If no worker is available, it waits until one becomes available.
 // Once a worker is acquired, the event is processed. After processing, the worker is released back to the pool.
 //
@@ -56,7 +56,7 @@ type Processor struct {
 
 // NewProcessor creates a new event processor.
 //
-// repo is the repository used to store and retrieve events.
+// store is the Storer used to store and retrieve events.
 //
 // conf is a map of event names to configurations. If an event is encountered
 // during processing with an event name that is not present in the map, a

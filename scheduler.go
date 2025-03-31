@@ -58,8 +58,8 @@ type Scheduler struct {
 }
 
 func NewScheduler(
-	executor *Executor,
 	processor *Processor,
+	executor *Executor,
 	telemetryPrefix string,
 ) (*Scheduler, error) {
 	s := &Scheduler{

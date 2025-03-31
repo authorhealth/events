@@ -98,8 +98,8 @@ func main() {
 	}
 
 	eventScheduler, err := events.NewScheduler(
-		eventExecutor,
 		eventProcessor,
+		eventExecutor,
 		"demo",
 	)
 	if err != nil {
@@ -108,11 +108,11 @@ func main() {
 	}
 
 	go func() {
-		slog.Info("starting event executor", "interval", eventSchedulerInterval, "processorLimit", eventProcessorLimit, "executorLimit", eventExecutorLimit)
+		slog.Info("starting event scheduler", "interval", eventSchedulerInterval, "processorLimit", eventProcessorLimit, "executorLimit", eventExecutorLimit)
 
 		err := eventScheduler.Start(ctx, eventSchedulerInterval, eventProcessorLimit, eventExecutorLimit)
 		if err != nil {
-			slog.Error("error starting event executor", events.Err(err))
+			slog.Error("error starting event scheduler", events.Err(err))
 			os.Exit(1)
 		}
 	}()

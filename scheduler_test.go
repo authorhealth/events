@@ -143,7 +143,7 @@ func TestScheduler(t *testing.T) {
 	executor, err := NewExecutor(store, eventMap, nil, "", 2)
 	assert.NoError(err)
 
-	scheduler, err := NewScheduler(executor, processor, "")
+	scheduler, err := NewScheduler(processor, executor, "")
 	assert.NoError(err)
 
 	go func() {
@@ -222,7 +222,7 @@ func TestScheduler_Operational_Pause_Paused_Resume_Status(t *testing.T) {
 			assert.NoError(err)
 
 			// Act/Assert - Scheduler not started
-			scheduler, err := NewScheduler(executor, processor, "")
+			scheduler, err := NewScheduler(processor, executor, "")
 
 			assert.NoError(err)
 			assert.False(scheduler.Operational())
@@ -416,7 +416,7 @@ func TestScheduler_Start_already_started(t *testing.T) {
 			executor, err := NewExecutor(store, nil, nil, "", 2)
 			assert.NoError(err)
 
-			scheduler, err := NewScheduler(executor, processor, "")
+			scheduler, err := NewScheduler(processor, executor, "")
 			assert.NoError(err)
 
 			if testCase.paused {
@@ -461,7 +461,7 @@ func TestScheduler_Shutdown_not_running(t *testing.T) {
 			executor, err := NewExecutor(store, nil, nil, "", 2)
 			assert.NoError(err)
 
-			scheduler, err := NewScheduler(executor, processor, "")
+			scheduler, err := NewScheduler(processor, executor, "")
 			assert.NoError(err)
 
 			if testCase.paused {
@@ -500,7 +500,7 @@ func TestScheduler_Shutdown_already_shut_down(t *testing.T) {
 	executor, err := NewExecutor(store, nil, nil, "", 2)
 	assert.NoError(err)
 
-	scheduler, err := NewScheduler(executor, processor, "")
+	scheduler, err := NewScheduler(processor, executor, "")
 	assert.NoError(err)
 
 	go func() {

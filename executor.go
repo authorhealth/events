@@ -41,12 +41,12 @@ var _ BackoffFunc = DefaultBackoffFunc
 // If an error is returned, the request will not be executed.
 type BeforeExecuteHook func(context.Context, *HandlerRequest) (context.Context, *HandlerRequest, error)
 
-// Executor provides a way to execute requests from a HandlerRequestRepository.
+// Executor provides a way to execute requests from a Storer.
 // It uses a configurable number of worker goroutines to execute requests concurrently.
 // Before execution, a BeforeExecuteHook can be used to modify the request or context.
 // The Executor also provides metrics for monitoring the execution of requests.
 //
-// The Executor starts by retrieving unexecuted requests from the Repository.
+// The Executor starts by retrieving unexecuted requests from the Storer.
 // For each request, it acquires a worker from a pool of workers. If no worker is available, it waits until one becomes available.
 // Once a worker is acquired, the request is executed. After execution, the worker is released back to the pool.
 //
@@ -73,7 +73,7 @@ type Executor struct {
 
 // NewExecutor creates a new request executor.
 //
-// repo is the repository used to store and retrieve requests.
+// store is the Storer used to store and retrieve requests.
 //
 // conf is a map of request names to configurations. If a handler request is
 // encountered during execution with a handler request name that is not present
