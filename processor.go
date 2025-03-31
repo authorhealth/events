@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/avast/retry-go/v4"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -272,9 +271,7 @@ func (p *Processor) processEvent(ctx context.Context, event *Event) {
 		}
 
 		for _, request := range requests {
-			err := retry.Do(func() error {
-				return txStore.HandlerRequests().Create(ctx, request)
-			})
+			err := txStore.HandlerRequests().Create(ctx, request)
 			if err != nil {
 				return fmt.Errorf("creating handler request: %w", err)
 			}
@@ -282,9 +279,7 @@ func (p *Processor) processEvent(ctx context.Context, event *Event) {
 
 		event.ProcessedAt = Ptr(time.Now())
 
-		err = retry.Do(func() error {
-			return txStore.Events().Update(ctx, event)
-		})
+		err = txStore.Events().Update(ctx, event)
 		if err != nil {
 			return fmt.Errorf("updating %s event: %w", event.Name, err)
 		}
