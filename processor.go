@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -17,66 +16,36 @@ import (
 )
 
 const (
-	MaxEventErrors = 5
-
-	defaultNumProcessorWorkers = 2
+	defaultNumProcessorWorkers = 1
 )
 
 var ErrRetryable = errors.New("event failed to process but is retryable")
 
-type BackoffFunc func(event *Event) time.Time
-
-func DefaultBackoffFunc(event *Event) time.Time {
-	duration := time.Second * time.Duration(event.Errors*2) * time.Duration(rand.IntN(45)+15)
-	backoffUntil := time.Now().Add(duration)
-
-	return backoffUntil
-}
-
-var _ BackoffFunc = DefaultBackoffFunc
-
+// BeforeProcessHook is a function that is called before an event is processed.
+// It can be used to modify the given context or event before it is processed.
+// If an error is returned, the event will not be processed.
 type BeforeProcessHook func(context.Context, *Event) (context.Context, *Event, error)
 
-type ProcessorStatus string
-
-const (
-	ProcessorStatusNotStarted ProcessorStatus = "notStarted"
-	ProcessorStatusRunning    ProcessorStatus = "running"
-	ProcessorStatusPaused     ProcessorStatus = "paused"
-	ProcessorStatusShutdown   ProcessorStatus = "shutdown"
-)
-
-func (ps ProcessorStatus) String() string {
-	return string(ps)
-}
-
-func (ps ProcessorStatus) operational() bool {
-	return ps == ProcessorStatusRunning || ps == ProcessorStatusPaused
-}
-
-type processorEvent string
-
-const (
-	processorEventPaused   processorEvent = "paused"
-	processorEventResumed  processorEvent = "resumed"
-	processorEventShutdown processorEvent = "shutdown"
-	processorEventStarted  processorEvent = "started"
-)
-
+// Processor provides a way to process events from a Storer.
+// It uses a configurable number of worker goroutines to process events concurrently.
+// Before processing, a BeforeProcessHook can be used to modify the event or context.
+// The Processor also provides metrics for monitoring the processing of events.
+//
+// The Processor starts by retrieving unprocessed events from the Storer.
+// For each event, it acquires a worker from a pool of workers. If no worker is available, it waits until one becomes available.
+// Once a worker is acquired, the event is processed. After processing, the worker is released back to the pool.
+//
+// The processing of an event involves creating handler execution requests for the event based on the set of handlers defined in the ConfigMap.
+// If the handler execution requests are created successfully, the event is marked as processed.
 type Processor struct {
 	beforeProcessHook          BeforeProcessHook
 	configMap                  ConfigMap
-	deadCountGauge             metric.Int64ObservableGauge
-	done                       chan bool
 	failureCounter             metric.Int64Counter
 	meter                      metric.Meter
 	meterCallbackRegistrations []metric.Registration
 	numProcessorWorkers        int
-	repo                       Repository
 	shutdown                   chan bool
-	status                     ProcessorStatus
-	statusRWMutex              sync.RWMutex
-	statusUpDownCounter        metric.Int64UpDownCounter
+	store                      Storer
 	successCounter             metric.Int64Counter
 	telemetryPrefix            string
 	timeHistogram              metric.Float64Histogram
@@ -85,8 +54,24 @@ type Processor struct {
 	unprocessedMaxAgeGauge     metric.Float64ObservableGauge
 }
 
+// NewProcessor creates a new event processor.
+//
+// store is the Storer used to store and retrieve events.
+//
+// conf is a map of event names to configurations. If an event is encountered
+// during processing with an event name that is not present in the map, a
+// warning will be logged, and the event will be marked as processed.
+//
+// beforeProcessHook is an optional hook that is called before each event
+// is processed.
+//
+// telemetryPrefix is used to prefix all metric names. This can be used to
+// prevent metric name collisions between different applications.
+//
+// numProcessorWorkers configures the number of worker goroutines that process
+// events. If numProcessorWorkers is <= 0, it defaults to 2.
 func NewProcessor(
-	repo Repository,
+	store Storer,
 	conf ConfigMap,
 	beforeProcessHook BeforeProcessHook,
 	telemetryPrefix string,
@@ -99,14 +84,12 @@ func NewProcessor(
 	p := &Processor{
 		beforeProcessHook:   beforeProcessHook,
 		configMap:           conf,
-		done:                make(chan bool, 1),
-		meter:               otel.GetMeterProvider().Meter("github.com/authorhealth/events"),
+		store:               store,
+		meter:               otel.GetMeterProvider().Meter("github.com/authorhealth/events/v2"),
 		numProcessorWorkers: numProcessorWorkers,
-		repo:                repo,
-		status:              ProcessorStatusNotStarted,
-		telemetryPrefix:     telemetryPrefix,
 		shutdown:            make(chan bool, 1),
-		tracer:              otel.GetTracerProvider().Tracer("github.com/authorhealth/events"),
+		telemetryPrefix:     telemetryPrefix,
+		tracer:              otel.GetTracerProvider().Tracer("github.com/authorhealth/events/v2"),
 	}
 
 	var err error
@@ -151,54 +134,7 @@ func NewProcessor(
 		return nil, fmt.Errorf("constructing max unprocessed event age gauge: %w", err)
 	}
 
-	p.deadCountGauge, err = p.meter.Int64ObservableGauge(
-		p.applyTelemetryPrefix("events.dead.count"),
-		metric.WithDescription("The number of dead events in the queue."),
-		metric.WithUnit("{event}"))
-	if err != nil {
-		return nil, fmt.Errorf("constructing dead event count gauge: %w", err)
-	}
-
-	p.statusUpDownCounter, err = p.meter.Int64UpDownCounter(
-		p.applyTelemetryPrefix("events.processor.status"),
-		metric.WithDescription("Operational status for the processor: 1 (true) or 0 (false) for each of the possible states"),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("constructing processor status up/down counter: %w", err)
-	}
-
 	return p, nil
-}
-
-func (p *Processor) Start(ctx context.Context, interval time.Duration, limit int) error {
-	if p.Status() != ProcessorStatusNotStarted {
-		return errors.New("processor is already started")
-	}
-
-	defer func() {
-		p.done <- true
-	}()
-
-	err := p.registerMeterCallbacks()
-	if err != nil {
-		return fmt.Errorf("registering meter callbacks: %w", err)
-	}
-
-	p.handleProcessorEvent(ctx, processorEventStarted)
-
-	ticker := time.NewTicker(interval)
-
-	for {
-		select {
-		case <-ticker.C:
-			if !p.Paused() {
-				p.processEvents(ctx, limit)
-			}
-
-		case <-p.shutdown:
-			return nil
-		}
-	}
 }
 
 func (p *Processor) beforeProcess(ctx context.Context, event *Event) (context.Context, *Event, error) {
@@ -221,7 +157,7 @@ func (p *Processor) processEvents(ctx context.Context, limit int) {
 	ctx, span := p.tracer.Start(ctx, "process events")
 	defer span.End()
 
-	events, err := p.repo.FindUnprocessed(ctx, limit)
+	events, err := p.store.Events().FindUnprocessed(ctx, limit)
 	if err != nil {
 		slog.ErrorContext(ctx, "error finding unprocessed events", Err(err))
 		span.RecordError(err)
@@ -262,9 +198,8 @@ func (p *Processor) processEvent(ctx context.Context, event *Event) {
 		attribute.String(p.applyTelemetryPrefix("correlation_id"), event.CorrelationID),
 	}
 
-	if event.EntityID != nil {
-		entityID := event.EntityID
-		traceAttrs = append(traceAttrs, attribute.String(p.applyTelemetryPrefix("event.entity.id"), *entityID))
+	if event.EntityID != "" {
+		traceAttrs = append(traceAttrs, attribute.String(p.applyTelemetryPrefix("event.entity.id"), event.EntityID))
 	}
 
 	ctx, span := p.tracer.Start(
@@ -281,7 +216,7 @@ func (p *Processor) processEvent(ctx context.Context, event *Event) {
 		"eventName", event.Name.String(),
 	)
 
-	logger.InfoContext(ctx, fmt.Sprintf("processing %s event", event.Name))
+	logger.DebugContext(ctx, fmt.Sprintf("processing %s event", event.Name))
 
 	ctx, event, err := p.beforeProcess(ctx, event)
 	if err != nil {
@@ -291,8 +226,12 @@ func (p *Processor) processEvent(ctx context.Context, event *Event) {
 		return
 	}
 
-	err = p.repo.Transaction(ctx, func(txRepo Repository) error {
-		event, err := txRepo.FindByIDForUpdate(ctx, event.ID, true)
+	metricAttrs := []attribute.KeyValue{
+		attribute.String(p.applyTelemetryPrefix("event.type"), event.Name.String()),
+	}
+
+	err = p.store.Transaction(ctx, func(txStore Storer) error {
+		event, err := txStore.Events().FindByIDForUpdate(ctx, event.ID, true)
 		if err != nil {
 			// Locked rows are skipped, so do not error on not found.
 			if errors.Is(err, ErrNotFound) {
@@ -306,109 +245,62 @@ func (p *Processor) processEvent(ctx context.Context, event *Event) {
 			return nil
 		}
 
-		config := p.configMap[event.Name]
-		if config == nil {
-			config = &Config{}
+		handlerConfigMap := p.configMap[event.Name]
+		if handlerConfigMap == nil {
+			handlerConfigMap = HandlerConfigMap{}
 		}
 
-		if len(config.Handlers) == 0 {
+		if len(handlerConfigMap) == 0 {
 			logger.WarnContext(ctx, fmt.Sprintf("no handlers mapped for %s event", event.Name))
 		}
 
-		metricAttrs := []attribute.KeyValue{
-			attribute.String(p.applyTelemetryPrefix("event.type"), event.Name.String()),
-		}
+		var requests []*HandlerRequest
+		for handlerName, handlerConfig := range handlerConfigMap {
+			request, err := NewHandlerRequest(
+				event,
+				handlerName,
+				handlerConfig.MaxErrors,
+				handlerConfig.Priority,
+			)
 
-		err = event.Process(ctx, config)
-		if err != nil {
-			isRetryable := errors.Is(err, ErrRetryable)
-			metricAttrs = append(metricAttrs,
-				attribute.Bool(p.applyTelemetryPrefix("event.retryable"), isRetryable),
-				attribute.Int(p.applyTelemetryPrefix("event.errors"), event.Errors))
-			var unprocessedHandlerNames []string
-			for handlerName, handlerResult := range event.UnprocessedHandlers() {
-				unprocessedHandlerNames = append(unprocessedHandlerNames, handlerName.String())
-				handlerLogger := logger.With("handlerName", handlerName)
-				var logLevel slog.Level
-				if isRetryable {
-					logLevel = slog.LevelWarn
-				} else {
-					logLevel = slog.LevelError
-				}
-
-				handlerLogger.Log(
-					ctx,
-					logLevel,
-					fmt.Sprintf("error while processing %s event with %s handler", event.Name, handlerName),
-					Err(handlerResult.LastError),
-					"lastProcessAttmptAt", handlerResult.LastProcessAttemptAt,
-				)
-
-				if !isRetryable {
-					span.RecordError(fmt.Errorf("processing %s event with \"%s\" handler: %w", event.Name, handlerName, handlerResult.LastError))
-				}
+			if err != nil {
+				return fmt.Errorf("new handler request: %w", err)
 			}
 
-			metricAttrs = append(metricAttrs,
-				attribute.StringSlice(p.applyTelemetryPrefix("event.unprocessed_handlers"), unprocessedHandlerNames))
-			p.failureCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
-
-			if !isRetryable {
-				logger.ErrorContext(ctx, fmt.Sprintf("%s event process error", event.Name), Err(err))
-				span.RecordError(err)
-				span.SetStatus(codes.Error, "event process error")
-			}
-		} else {
-			p.successCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
+			requests = append(requests, request)
 		}
 
-		err = txRepo.Update(ctx, event)
+		for _, request := range requests {
+			err := txStore.HandlerRequests().Create(ctx, request)
+			if err != nil {
+				return fmt.Errorf("creating handler request: %w", err)
+			}
+		}
+
+		event.ProcessedAt = Ptr(time.Now())
+
+		err = txStore.Events().Update(ctx, event)
 		if err != nil {
 			return fmt.Errorf("updating %s event: %w", event.Name, err)
 		}
 
-		if event.ProcessedAt != nil {
-			p.timeHistogram.Record(ctx, event.ProcessedAt.Sub(event.Timestamp).Seconds(), metric.WithAttributes(metricAttrs...))
-		}
+		p.successCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
+		p.timeHistogram.Record(ctx, event.ProcessedAt.Sub(event.Timestamp).Seconds(), metric.WithAttributes(metricAttrs...))
 
 		return nil
 	})
 	if err != nil {
-		logger.ErrorContext(ctx, "error running transaction", Err(err))
+		p.failureCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
+		logger.ErrorContext(ctx, "error processing event", Err(err))
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "error running transaction")
-	}
-}
-
-func (p *Processor) Shutdown(ctx context.Context) error {
-	if !p.Status().operational() {
-		return errors.New("processor is not operational")
-	}
-
-	p.shutdown <- true
-
-	p.handleProcessorEvent(ctx, processorEventShutdown)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-
-		case <-p.done:
-			err := p.unregisterMeterCallbacks()
-			if err != nil {
-				return fmt.Errorf("unregistering meter callbacks: %w", err)
-			}
-
-			return nil
-		}
+		span.SetStatus(codes.Error, "error processing event")
 	}
 }
 
 func (p *Processor) registerMeterCallbacks() error {
 	var registrations []metric.Registration
 	registration, err := p.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
-		count, err := p.repo.CountUnprocessed(ctx)
+		count, err := p.store.Events().CountUnprocessed(ctx)
 		if err != nil {
 			return fmt.Errorf("counting unprocessed events: %w", err)
 		}
@@ -424,7 +316,7 @@ func (p *Processor) registerMeterCallbacks() error {
 	registrations = append(registrations, registration)
 
 	registration, err = p.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
-		oldest, err := p.repo.FindOldestUnprocessed(ctx)
+		oldest, err := p.store.Events().FindOldestUnprocessed(ctx)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				o.ObserveFloat64(p.unprocessedMaxAgeGauge, 0)
@@ -445,22 +337,6 @@ func (p *Processor) registerMeterCallbacks() error {
 
 	registrations = append(registrations, registration)
 
-	registration, err = p.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
-		count, err := p.repo.CountDead(ctx)
-		if err != nil {
-			return fmt.Errorf("counting dead events: %w", err)
-		}
-
-		o.ObserveInt64(p.deadCountGauge, int64(count))
-
-		return nil
-	}, p.deadCountGauge)
-	if err != nil {
-		return fmt.Errorf("registering callback for dead event count guage: %w", err)
-	}
-
-	registrations = append(registrations, registration)
-
 	p.meterCallbackRegistrations = registrations
 
 	return nil
@@ -477,98 +353,4 @@ func (p *Processor) unregisterMeterCallbacks() error {
 	p.meterCallbackRegistrations = nil
 
 	return nil
-}
-
-func (p *Processor) Operational() bool {
-	return p.Status().operational()
-}
-
-func (p *Processor) Pause(ctx context.Context) {
-	p.handleProcessorEvent(ctx, processorEventPaused)
-}
-
-func (p *Processor) Paused() bool {
-	return p.Status() == ProcessorStatusPaused
-}
-
-func (p *Processor) Resume(ctx context.Context) {
-	p.handleProcessorEvent(ctx, processorEventResumed)
-}
-
-func (p *Processor) Status() ProcessorStatus {
-	p.statusRWMutex.RLock()
-	defer p.statusRWMutex.RUnlock()
-
-	return p.status
-}
-
-func (p *Processor) handleProcessorEvent(ctx context.Context, event processorEvent) {
-	p.statusRWMutex.Lock()
-	defer p.statusRWMutex.Unlock()
-
-	nextStatus := p.status
-
-	switch p.status {
-	case ProcessorStatusNotStarted:
-		switch event {
-		case processorEventStarted:
-			nextStatus = ProcessorStatusRunning
-		}
-
-	case ProcessorStatusRunning:
-		switch event {
-		case processorEventPaused:
-			nextStatus = ProcessorStatusPaused
-
-		case processorEventShutdown:
-			nextStatus = ProcessorStatusShutdown
-		}
-
-	case ProcessorStatusPaused:
-		switch event {
-		case processorEventResumed:
-			nextStatus = ProcessorStatusRunning
-
-		case processorEventShutdown:
-			nextStatus = ProcessorStatusShutdown
-		}
-	}
-
-	if nextStatus == p.status {
-		return
-	}
-
-	previousStatus := p.status
-	p.status = nextStatus
-
-	// Keep track of the number of operational event processors and their state (i.e., running or paused).
-	if previousStatus.operational() {
-		p.statusUpDownCounter.Add(
-			ctx,
-			-1,
-			metric.WithAttributeSet(
-				attribute.NewSet(
-					attribute.String(
-						p.applyTelemetryPrefix("events.processor.state"),
-						previousStatus.String(),
-					),
-				),
-			),
-		)
-	}
-
-	if p.status.operational() {
-		p.statusUpDownCounter.Add(
-			ctx,
-			1,
-			metric.WithAttributeSet(
-				attribute.NewSet(
-					attribute.String(
-						p.applyTelemetryPrefix("events.processor.state"),
-						p.status.String(),
-					),
-				),
-			),
-		)
-	}
 }

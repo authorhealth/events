@@ -12,7 +12,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-type HandlerFunc func(context.Context, *Event) error
+type HandlerFunc func(context.Context, *HandlerRequest) error
 
 type HandlerName string
 
@@ -43,10 +43,10 @@ func NewHandlerErr(name HandlerName, telemetryPrefix string, f HandlerFunc) (*Ha
 		f:               f,
 		name:            name,
 		telemetryPrefix: telemetryPrefix,
-		tracer:          otel.GetTracerProvider().Tracer("github.com/authorhealth/events"),
+		tracer:          otel.GetTracerProvider().Tracer("github.com/authorhealth/events/v2"),
 	}
 
-	meter := otel.GetMeterProvider().Meter("github.com/authorhealth/events")
+	meter := otel.GetMeterProvider().Meter("github.com/authorhealth/events/v2")
 
 	var err error
 	h.executionCounter, err = meter.Int64Counter(
@@ -73,17 +73,17 @@ func (h *Handler) Name() HandlerName {
 	return h.name
 }
 
-func (h *Handler) Do(ctx context.Context, event *Event) error {
+func (h *Handler) Do(ctx context.Context, request *HandlerRequest) error {
 	ctx, span := h.tracer.Start(ctx, fmt.Sprintf("%s handler", h.name))
 	defer span.End()
 
 	metricAttrs := []attribute.KeyValue{
 		attribute.Stringer(h.applyTelemetryPrefix("event_handler.name"), h.name),
-		attribute.Stringer(h.applyTelemetryPrefix("event.type"), event.Name),
+		attribute.Stringer(h.applyTelemetryPrefix("event.type"), request.EventName),
 	}
 
 	start := time.Now()
-	err := h.f(ctx, event)
+	err := h.f(ctx, request)
 	duration := time.Since(start)
 
 	if err != nil {
