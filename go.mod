@@ -4,7 +4,7 @@ go 1.24
 
 require (
 	github.com/google/uuid v1.6.0
-	github.com/lmittmann/tint v1.0.7
+	github.com/lmittmann/tint v1.1.0
 	github.com/stretchr/testify v1.10.0
 	go.opentelemetry.io/otel/metric v1.36.0
 	go.opentelemetry.io/otel/sdk v1.36.0
