@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -35,6 +36,10 @@ func DefaultBackoffFunc(request *HandlerRequest) time.Time {
 }
 
 var _ BackoffFunc = DefaultBackoffFunc
+
+var missingHandlerFunc HandlerFunc = func(ctx context.Context, hr *HandlerRequest) error {
+	return errors.New("handler request has no configured handler")
+}
 
 // BeforeExecuteHook is a function that is called before a handler request is executed.
 // It can be used to modify the given context or request before it is executed.
@@ -271,13 +276,32 @@ func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) 
 
 		config := e.configMap[request.EventName][request.HandlerName]
 		if config == nil {
-			config = &HandlerConfig{}
+			config = &HandlerConfig{
+				Handler: NewHandler(request.HandlerName, e.telemetryPrefix, missingHandlerFunc),
+			}
 		}
 
 		metricAttrs := []attribute.KeyValue{
 			attribute.Stringer(e.applyTelemetryPrefix("request.event.type"), request.EventName),
 			attribute.Stringer(e.applyTelemetryPrefix("request.type"), request.HandlerName),
 		}
+
+		defer func() {
+			if rvr := recover(); rvr != nil {
+				logger.Log(
+					ctx,
+					slog.LevelError,
+					"recovered panic while executing handler request",
+					slog.Any("panic", rvr),
+					slog.String("stack", string(debug.Stack())),
+				)
+
+				span.SetAttributes(attribute.String(e.applyTelemetryPrefix("request.event.panic"), fmt.Sprintf("%v", rvr)))
+				span.SetStatus(codes.Error, "recovered panic while executing handler request")
+
+				e.failureCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
+			}
+		}()
 
 		err = request.execute(ctx, config)
 		if err != nil {
