@@ -407,7 +407,7 @@ func (r *HandlerRequestRepository) FindByIDForUpdate(ctx context.Context, id str
 	return row.handlerRequest, nil
 }
 
-func (r *HandlerRequestRepository) FindDead(ctx context.Context) ([]*events.HandlerRequest, error) {
+func (r *HandlerRequestRepository) FindDead(ctx context.Context, limit int, offset int) ([]*events.HandlerRequest, error) {
 	r.db.handlerRequestTableMutex.RLock()
 	defer r.db.handlerRequestTableMutex.RUnlock()
 
@@ -430,7 +430,13 @@ func (r *HandlerRequestRepository) FindDead(ctx context.Context) ([]*events.Hand
 		deadHandlerRequests = append(deadHandlerRequests, row.handlerRequest)
 	}
 
-	return deadHandlerRequests, nil
+	if offset >= len(deadHandlerRequests) {
+		return nil, nil
+	}
+
+	end := min(offset+limit, len(deadHandlerRequests))
+
+	return deadHandlerRequests[offset:end], nil
 }
 
 func (r *HandlerRequestRepository) FindOldestUnexecuted(ctx context.Context) (*events.HandlerRequest, error) {
