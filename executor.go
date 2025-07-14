@@ -288,9 +288,8 @@ func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) 
 
 		defer func() {
 			if rvr := recover(); rvr != nil {
-				logger.Log(
+				logger.ErrorContext(
 					ctx,
-					slog.LevelError,
 					"recovered panic while executing handler request",
 					slog.Any("panic", rvr),
 					slog.String("stack", string(debug.Stack())),
