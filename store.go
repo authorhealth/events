@@ -33,7 +33,7 @@ type HandlerRequestRepository interface {
 	Find(ctx context.Context) iter.Seq2[*HandlerRequest, error]
 	FindByID(ctx context.Context, id string) (*HandlerRequest, error)
 	FindByIDForUpdate(ctx context.Context, id string, skipLocked bool) (*HandlerRequest, error)
-	FindDead(ctx context.Context) ([]*HandlerRequest, error)
+	FindDead(ctx context.Context, limit int, offset int) ([]*HandlerRequest, error)
 	FindOldestUnexecuted(ctx context.Context) (*HandlerRequest, error)
 	FindUnexecuted(ctx context.Context, limit int) ([]*HandlerRequest, error)
 	Update(ctx context.Context, handlerRequest *HandlerRequest) error
