@@ -23,7 +23,11 @@ func NewEventSystemReporter(store events.Storer) *EventSystemReporter {
 	}
 }
 
-func (r *EventSystemReporter) Start(ctx context.Context, interval time.Duration) {
+func (r *EventSystemReporter) Start(
+	ctx context.Context,
+	interval time.Duration,
+	queueNames []events.ExecutorQueueName,
+) {
 	defer func() {
 		r.done <- true
 	}()
@@ -34,6 +38,9 @@ func (r *EventSystemReporter) Start(ctx context.Context, interval time.Duration)
 		select {
 		case <-ticker.C:
 			r.report(ctx)
+			for _, queueName := range queueNames {
+				r.reportForQueue(ctx, queueName)
+			}
 
 		case <-r.shutdown:
 			return
@@ -96,6 +103,37 @@ func (r *EventSystemReporter) report(ctx context.Context) {
 		"event system report",
 		slog.Int("unprocessedEventCount", unprocessedEventCount),
 		slog.Float64("maxUnprocessedEventAge", maxUnprocessedEventAge),
+		slog.Int("unexecutedRequestCount", unexecutedRequestCount),
+		slog.Float64("maxUnexecutedRequestAge", maxUnexecutedRequestAge),
+		slog.Int("deadRequestCount", deadRequestCount),
+	)
+}
+
+func (r *EventSystemReporter) reportForQueue(ctx context.Context, queueName events.ExecutorQueueName) {
+	unexecutedRequestCount, err := r.store.HandlerRequests().CountUnexecutedByQueue(ctx, queueName)
+	if err != nil {
+		slog.ErrorContext(ctx, "error counting unexecuted handler requests by queue", events.Err(err))
+	}
+
+	oldestUnexecutedRequest, err := r.store.HandlerRequests().FindOldestUnexecutedByQueue(ctx, queueName)
+	if err != nil && !errors.Is(err, events.ErrNotFound) {
+		slog.ErrorContext(ctx, "error finding oldest unexecuted handler request by queue", events.Err(err))
+	}
+
+	var maxUnexecutedRequestAge float64
+	if oldestUnexecutedRequest != nil {
+		maxUnexecutedRequestAge = time.Since(oldestUnexecutedRequest.EventTimestamp).Seconds()
+	}
+
+	deadRequestCount, err := r.store.HandlerRequests().CountDeadByQueue(ctx, queueName)
+	if err != nil {
+		slog.ErrorContext(ctx, "error counting dead handler requests by queue", events.Err(err))
+	}
+
+	slog.InfoContext(
+		ctx,
+		"event system report for queue",
+		slog.Any("queueName", queueName),
 		slog.Int("unexecutedRequestCount", unexecutedRequestCount),
 		slog.Float64("maxUnexecutedRequestAge", maxUnexecutedRequestAge),
 		slog.Int("deadRequestCount", deadRequestCount),

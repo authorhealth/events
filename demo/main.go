@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -23,6 +24,12 @@ const (
 	eventSystemReporterInterval = 1 * time.Second
 	shutdownTimeout             = 10 * time.Second
 )
+
+var concurrent bool
+
+func init() {
+	flag.BoolVar(&concurrent, "concurrent", false, "if true, uses concurrent scheduler and pool executors")
+}
 
 func main() {
 	ctx := context.Background()
@@ -51,13 +58,16 @@ func main() {
 	db := NewDatabase()
 	store := NewStore(db)
 
+	domainQueueName := events.ExecutorQueueName("domain")
+
 	configMap := events.NewConfigMap(
 		events.WithEvent(ApplicationEventName,
 			events.WithHandler(ApplicationEventHandler()),
 			events.WithHandler(FailingEventHandler()),
 		),
 		events.WithEvent(DomainEventName,
-			events.WithHandler(DomainEventHandler()),
+			events.WithHandler(DomainEventHandler(), events.WithQueue(domainQueueName)),
+			events.WithHandler(FailingEventHandler(), events.WithQueue(domainQueueName)),
 		),
 	)
 
@@ -70,47 +80,102 @@ func main() {
 	eventSystemReporter := NewEventSystemReporter(store)
 	go func() {
 		slog.Info("starting event system reporter", "interval", eventSystemReporterInterval)
-		eventSystemReporter.Start(ctx, eventSystemReporterInterval)
+		eventSystemReporter.Start(
+			ctx,
+			eventSystemReporterInterval,
+			[]events.ExecutorQueueName{
+				events.DefaultExecutorQueueName,
+				domainQueueName,
+			},
+		)
 	}()
 
-	eventProcessor, err := events.NewProcessor(
+	eventProcessor, err := events.NewDefaultProcessor(
 		store,
 		configMap,
 		nil,
 		"demo",
 		eventProcessorNumWorkers,
+		eventProcessorLimit,
 	)
 	if err != nil {
 		slog.Error("error constructing event processor", events.Err(err))
 		os.Exit(1)
 	}
 
-	eventExecutor, err := events.NewExecutor(
-		store,
-		configMap,
-		nil,
-		"demo",
-		eventExecutorNumWorkers,
-	)
-	if err != nil {
-		slog.Error("error constructing event executor", events.Err(err))
-		os.Exit(1)
-	}
+	var eventScheduler events.Scheduler
+	if concurrent {
+		defaultQueueExecutor, err := events.NewQueueExecutor(
+			store,
+			configMap,
+			nil,
+			"demo",
+			eventExecutorNumWorkers,
+			eventExecutorLimit,
+			events.DefaultExecutorQueueName,
+		)
+		if err != nil {
+			slog.Error("error constructing default queue event executor", events.Err(err))
+			os.Exit(1)
+		}
 
-	eventScheduler, err := events.NewScheduler(
-		eventProcessor,
-		eventExecutor,
-		"demo",
-	)
-	if err != nil {
-		slog.Error("error constructing event scheduler", events.Err(err))
-		os.Exit(1)
+		domainQueueExecutor, err := events.NewQueueExecutor(
+			store,
+			configMap,
+			nil,
+			"demo",
+			eventExecutorNumWorkers,
+			eventExecutorLimit,
+			domainQueueName,
+		)
+		if err != nil {
+			slog.Error("error constructing domain queue event executor", events.Err(err))
+			os.Exit(1)
+		}
+
+		eventScheduler, err = events.NewConcurrentScheduler(
+			eventProcessor,
+			[]events.Executor{
+				defaultQueueExecutor,
+				domainQueueExecutor,
+			},
+			"demo",
+			eventSchedulerInterval,
+		)
+		if err != nil {
+			slog.Error("error constructing event scheduler", events.Err(err))
+			os.Exit(1)
+		}
+	} else {
+		eventExecutor, err := events.NewDefaultExecutor(
+			store,
+			configMap,
+			nil,
+			"demo",
+			eventExecutorNumWorkers,
+			eventExecutorLimit,
+		)
+		if err != nil {
+			slog.Error("error constructing event executor", events.Err(err))
+			os.Exit(1)
+		}
+
+		eventScheduler, err = events.NewCooperativeScheduler(
+			eventProcessor,
+			eventExecutor,
+			"demo",
+			eventSchedulerInterval,
+		)
+		if err != nil {
+			slog.Error("error constructing event scheduler", events.Err(err))
+			os.Exit(1)
+		}
 	}
 
 	go func() {
 		slog.Info("starting event scheduler", "interval", eventSchedulerInterval, "processorLimit", eventProcessorLimit, "executorLimit", eventExecutorLimit)
 
-		err := eventScheduler.Start(ctx, eventSchedulerInterval, eventProcessorLimit, eventExecutorLimit)
+		err := eventScheduler.Start(ctx)
 		if err != nil {
 			slog.Error("error starting event scheduler", events.Err(err))
 			os.Exit(1)

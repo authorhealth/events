@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -41,37 +42,45 @@ var _ BackoffFunc = DefaultBackoffFunc
 // If an error is returned, the request will not be executed.
 type BeforeExecuteHook func(context.Context, *HandlerRequest) (context.Context, *HandlerRequest, error)
 
-// Executor provides a way to execute requests from a Storer.
+type ExecutorQueueName string
+
+const DefaultExecutorQueueName ExecutorQueueName = "default"
+
+func (epn ExecutorQueueName) String() string {
+	return string(epn)
+}
+
+// Executor provides a standard interface for executing requests.
+type Executor interface {
+	executeRequests(ctx context.Context)
+	registerMeterCallbacks() error
+	shutdown()
+	unregisterMeterCallbacks() error
+}
+
+// DefaultExecutor provides a way to execute requests from a Storer.
 // It uses a configurable number of worker goroutines to execute requests concurrently.
 // Before execution, a BeforeExecuteHook can be used to modify the request or context.
-// The Executor also provides metrics for monitoring the execution of requests.
+// The DefaultExecutor also provides metrics for monitoring the execution of requests.
 //
-// The Executor starts by retrieving unexecuted requests from the Storer.
+// The DefaultExecutor starts by retrieving unexecuted requests from the Storer.
 // For each request, it acquires a worker from a pool of workers. If no worker is available, it waits until one becomes available.
 // Once a worker is acquired, the request is executed. After execution, the worker is released back to the pool.
 //
 // The execution of a handler request involves running a set of handlers defined in the ConfigMap.
 // If any handler returns an error, the request is marked as failed.
 // If all handlers complete successfully, the request is marked as executed.
-type Executor struct {
-	beforeExecuteHook          BeforeExecuteHook
-	configMap                  ConfigMap
-	deadCountGauge             metric.Int64ObservableGauge
-	failureCounter             metric.Int64Counter
-	meter                      metric.Meter
-	meterCallbackRegistrations []metric.Registration
-	numExecutorWorkers         int
-	shutdown                   chan bool
-	store                      Storer
-	successCounter             metric.Int64Counter
-	telemetryPrefix            string
-	timeHistogram              metric.Float64Histogram
-	tracer                     trace.Tracer
-	unexecutedCountGauge       metric.Int64ObservableGauge
-	unexecutedMaxAgeGauge      metric.Float64ObservableGauge
+type DefaultExecutor struct {
+	*executorStatsObserver
+	*executorWorkerPool
+
+	limit int
+	store Storer
 }
 
-// NewExecutor creates a new request executor.
+var _ Executor = (*DefaultExecutor)(nil)
+
+// NewDefaultExecutor creates a new DefaultExecutor.
 //
 // store is the Storer used to store and retrieve requests.
 //
@@ -88,102 +97,53 @@ type Executor struct {
 //
 // numExecutorWorkers configures the number of worker goroutines that execute
 // requests. If numExecutorWorkers is <= 0, it defaults to 2.
-func NewExecutor(
+func NewDefaultExecutor(
 	store Storer,
 	conf ConfigMap,
 	beforeExecuteHook BeforeExecuteHook,
 	telemetryPrefix string,
 	numExecutorWorkers int,
-) (*Executor, error) {
+	limit int,
+) (*DefaultExecutor, error) {
+	observer, err := newExecutorStatsObserver(
+		store,
+		telemetryPrefix,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	if numExecutorWorkers <= 0 {
 		numExecutorWorkers = defaultNumExecutorWorkers
 	}
 
-	e := &Executor{
-		beforeExecuteHook:  beforeExecuteHook,
-		configMap:          conf,
-		meter:              otel.GetMeterProvider().Meter("github.com/authorhealth/events/v2"),
-		numExecutorWorkers: numExecutorWorkers,
-		store:              store,
-		telemetryPrefix:    telemetryPrefix,
-		shutdown:           make(chan bool, 1),
-		tracer:             otel.GetTracerProvider().Tracer("github.com/authorhealth/events/v2"),
+	pool, err := newExecutorWorkerPool(
+		store,
+		conf,
+		beforeExecuteHook,
+		telemetryPrefix,
+		numExecutorWorkers,
+		DefaultExecutorQueueName,
+	)
+	if err != nil {
+		return nil, err
 	}
 
-	var err error
-	e.successCounter, err = e.meter.Int64Counter(
-		e.applyTelemetryPrefix("requests.executed.successes"),
-		metric.WithDescription("The number of successfully executed requests."),
-		metric.WithUnit("{success}"))
-	if err != nil {
-		return nil, fmt.Errorf("constructing success counter: %w", err)
-	}
-
-	e.failureCounter, err = e.meter.Int64Counter(
-		e.applyTelemetryPrefix("requests.executed.failures"),
-		metric.WithDescription("The number of requests that failed to execute."),
-		metric.WithUnit("{failure}"))
-	if err != nil {
-		return nil, fmt.Errorf("constructing failure counter: %w", err)
-	}
-
-	e.timeHistogram, err = e.meter.Float64Histogram(
-		e.applyTelemetryPrefix("requests.execution_time"),
-		metric.WithDescription("The time spent executing a handler request."),
-		metric.WithUnit("s"),
-		metric.WithExplicitBucketBoundaries(0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300))
-	if err != nil {
-		return nil, fmt.Errorf("constructing time histogram: %w", err)
-	}
-
-	e.unexecutedCountGauge, err = e.meter.Int64ObservableGauge(
-		e.applyTelemetryPrefix("requests.unexecuted.count"),
-		metric.WithDescription("The number of unexecuted requests in the queue."),
-		metric.WithUnit("{request}"))
-	if err != nil {
-		return nil, fmt.Errorf("constructing unexecuted request count gauge: %w", err)
-	}
-
-	e.unexecutedMaxAgeGauge, err = e.meter.Float64ObservableGauge(
-		e.applyTelemetryPrefix("requests.unexecuted.max_age"),
-		metric.WithDescription("The age of the oldest unexecuted request in the queue."),
-		metric.WithUnit("s"))
-	if err != nil {
-		return nil, fmt.Errorf("constructing max unexecuted request age gauge: %w", err)
-	}
-
-	e.deadCountGauge, err = e.meter.Int64ObservableGauge(
-		e.applyTelemetryPrefix("requests.dead.count"),
-		metric.WithDescription("The number of dead requests in the queue."),
-		metric.WithUnit("{request}"))
-	if err != nil {
-		return nil, fmt.Errorf("constructing dead request count gauge: %w", err)
+	e := &DefaultExecutor{
+		executorStatsObserver: observer,
+		executorWorkerPool:    pool,
+		limit:                 limit,
+		store:                 store,
 	}
 
 	return e, nil
 }
 
-func (e *Executor) beforeExecute(ctx context.Context, request *HandlerRequest) (context.Context, *HandlerRequest, error) {
-	if e.beforeExecuteHook == nil {
-		return ctx, request, nil
-	}
-
-	return e.beforeExecuteHook(ctx, request)
-}
-
-func (e *Executor) applyTelemetryPrefix(k string) string {
-	if len(e.telemetryPrefix) > 0 {
-		return fmt.Sprintf("%s.%s", e.telemetryPrefix, k)
-	}
-
-	return k
-}
-
-func (e *Executor) executeRequests(ctx context.Context, limit int) {
+func (e *DefaultExecutor) executeRequests(ctx context.Context) {
 	ctx, span := e.tracer.Start(ctx, "execute requests")
 	defer span.End()
 
-	requests, err := e.store.HandlerRequests().FindUnexecuted(ctx, limit)
+	requests, err := e.store.HandlerRequests().FindUnexecuted(ctx, e.limit)
 	if err != nil {
 		slog.ErrorContext(ctx, "error finding unexecuted requests", Err(err))
 		span.RecordError(err)
@@ -191,17 +151,212 @@ func (e *Executor) executeRequests(ctx context.Context, limit int) {
 		return
 	}
 
+	e.executorWorkerPool.executeRequests(ctx, requests)
+}
+
+// QueueExecutor provides a way to execute requests for an executor queue from a Storer.
+// It uses a configurable number of worker goroutines to execute requests concurrently.
+// Before execution, a BeforeExecuteHook can be used to modify the request or context.
+// The QueueExecutor also provides metrics for monitoring the execution of requests.
+//
+// The QueueExecutor starts by retrieving unexecuted requests for the executor queue from the Storer.
+// For each request, it acquires a worker from a pool of workers. If no worker is available, it waits until one becomes available.
+// Once a worker is acquired, the request is executed. After execution, the worker is released back to the pool.
+//
+// The execution of a handler request involves running a set of handlers defined in the ConfigMap.
+// If any handler returns an error, the request is marked as failed.
+// If all handlers complete successfully, the request is marked as executed.
+type QueueExecutor struct {
+	*executorQueueStatsObserver
+	*executorWorkerPool
+
+	limit     int
+	queueName ExecutorQueueName
+	store     Storer
+}
+
+var _ Executor = (*QueueExecutor)(nil)
+
+// NewQueueExecutor creates a new QueueExecutor.
+//
+// store is the Storer used to store and retrieve requests.
+//
+// conf is a map of request names to configurations. If a handler request is
+// encountered during execution with a handler request name that is not present
+// in the map, a warning will be logged, and the request will be marked
+// as executed.
+//
+// beforeExecuteHook is an optional hook that is called before each request
+// is executed.
+//
+// telemetryPrefix is used to prefix all metric names. This can be used to
+// prevent metric name collisions between different applications.
+//
+// numExecutorWorkers configures the number of worker goroutines that execute
+// requests. If numExecutorWorkers is <= 0, it defaults to 2.
+//
+// queueName is the name of the queue to execute requests from.
+func NewQueueExecutor(
+	store Storer,
+	conf ConfigMap,
+	beforeExecuteHook BeforeExecuteHook,
+	telemetryPrefix string,
+	numExecutorWorkers int,
+	limit int,
+	queueName ExecutorQueueName,
+) (*QueueExecutor, error) {
+	observer, err := newExecutorQueueStatsObserver(
+		store,
+		telemetryPrefix,
+		queueName,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if numExecutorWorkers <= 0 {
+		numExecutorWorkers = defaultNumExecutorWorkers
+	}
+
+	pool, err := newExecutorWorkerPool(
+		store,
+		conf,
+		beforeExecuteHook,
+		telemetryPrefix,
+		numExecutorWorkers,
+		DefaultExecutorQueueName,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	e := &QueueExecutor{
+		executorQueueStatsObserver: observer,
+		executorWorkerPool:         pool,
+		limit:                      limit,
+		queueName:                  queueName,
+		store:                      store,
+	}
+
+	return e, nil
+}
+
+func (e *QueueExecutor) executeRequests(ctx context.Context) {
+	ctx, span := e.tracer.Start(ctx, "execute requests")
+	defer span.End()
+
+	requests, err := e.store.HandlerRequests().FindUnexecutedByQueue(ctx, e.queueName, e.limit)
+	if err != nil {
+		slog.ErrorContext(ctx, "error finding unexecuted requests by queue", Err(err))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "error finding unexecuted requests")
+		return
+	}
+
+	e.executorWorkerPool.executeRequests(ctx, requests)
+}
+
+type executorWorkerPool struct {
+	beforeExecuteHook  BeforeExecuteHook
+	configMap          ConfigMap
+	executingRequests  atomic.Bool
+	failureCounter     metric.Int64Counter
+	meter              metric.Meter
+	numExecutorWorkers int
+	queueName          ExecutorQueueName
+	shutdownChan       chan bool
+	store              Storer
+	successCounter     metric.Int64Counter
+	telemetryPrefix    string
+	timeHistogram      metric.Float64Histogram
+	tracer             trace.Tracer
+}
+
+func newExecutorWorkerPool(
+	store Storer,
+	conf ConfigMap,
+	beforeExecuteHook BeforeExecuteHook,
+	telemetryPrefix string,
+	numExecutorWorkers int,
+	queueName ExecutorQueueName,
+) (*executorWorkerPool, error) {
+	ewp := &executorWorkerPool{
+		beforeExecuteHook:  beforeExecuteHook,
+		configMap:          conf,
+		meter:              otel.GetMeterProvider().Meter("github.com/authorhealth/events/v2"),
+		numExecutorWorkers: numExecutorWorkers,
+		queueName:          queueName,
+		store:              store,
+		telemetryPrefix:    telemetryPrefix,
+		shutdownChan:       make(chan bool, 1),
+		tracer:             otel.GetTracerProvider().Tracer("github.com/authorhealth/events/v2"),
+	}
+
+	var err error
+	ewp.successCounter, err = ewp.meter.Int64Counter(
+		ewp.applyTelemetryPrefix("requests.executed.successes"),
+		metric.WithDescription("The number of successfully executed requests."),
+		metric.WithUnit("{success}"))
+	if err != nil {
+		return nil, fmt.Errorf("constructing success counter: %w", err)
+	}
+
+	ewp.failureCounter, err = ewp.meter.Int64Counter(
+		ewp.applyTelemetryPrefix("requests.executed.failures"),
+		metric.WithDescription("The number of requests that failed to execute."),
+		metric.WithUnit("{failure}"))
+	if err != nil {
+		return nil, fmt.Errorf("constructing failure counter: %w", err)
+	}
+
+	ewp.timeHistogram, err = ewp.meter.Float64Histogram(
+		ewp.applyTelemetryPrefix("requests.execution_time"),
+		metric.WithDescription("The time spent executing a handler request."),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300))
+	if err != nil {
+		return nil, fmt.Errorf("constructing time histogram: %w", err)
+	}
+
+	return ewp, nil
+}
+
+func (ewp *executorWorkerPool) beforeExecute(ctx context.Context, request *HandlerRequest) (context.Context, *HandlerRequest, error) {
+	if ewp.beforeExecuteHook == nil {
+		return ctx, request, nil
+	}
+
+	return ewp.beforeExecuteHook(ctx, request)
+}
+
+func (ewp *executorWorkerPool) applyTelemetryPrefix(k string) string {
+	if len(ewp.telemetryPrefix) > 0 {
+		return fmt.Sprintf("%s.%s", ewp.telemetryPrefix, k)
+	}
+
+	return k
+}
+
+func (ewp *executorWorkerPool) executeRequests(ctx context.Context, requests []*HandlerRequest) bool {
+	if !ewp.executingRequests.CompareAndSwap(false, true) {
+		return false
+	}
+
 	var wg sync.WaitGroup
-	defer wg.Wait()
-	workers := make(chan struct{}, e.numExecutorWorkers)
+	defer func() {
+		wg.Wait()
+		ewp.executingRequests.Store(false)
+	}()
+
+	workers := make(chan bool, ewp.numExecutorWorkers)
 
 	for _, request := range requests {
 		select {
-		case <-e.shutdown:
-			return
+		case <-ewp.shutdownChan:
+			return true
 
 		default:
-			workers <- struct{}{}
+			workers <- true
 
 			request := request
 			wg.Add(1)
@@ -211,26 +366,29 @@ func (e *Executor) executeRequests(ctx context.Context, limit int) {
 					wg.Done()
 				}()
 
-				e.executeRequest(ctx, request)
+				ewp.executeRequest(ctx, request)
 			}()
 		}
 	}
+
+	return true
 }
 
-func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) {
+func (ewp *executorWorkerPool) executeRequest(ctx context.Context, request *HandlerRequest) {
 	traceAttrs := []attribute.KeyValue{
-		attribute.String(e.applyTelemetryPrefix("request.id"), request.ID),
-		attribute.String(e.applyTelemetryPrefix("request.event.id"), request.EventID),
-		attribute.Stringer(e.applyTelemetryPrefix("request.event.type"), request.EventName),
-		attribute.Stringer(e.applyTelemetryPrefix("request.type"), request.HandlerName),
-		attribute.String(e.applyTelemetryPrefix("correlation_id"), request.CorrelationID),
+		attribute.String(ewp.applyTelemetryPrefix("request.id"), request.ID),
+		attribute.String(ewp.applyTelemetryPrefix("request.event.id"), request.EventID),
+		attribute.Stringer(ewp.applyTelemetryPrefix("request.event.type"), request.EventName),
+		attribute.Stringer(ewp.applyTelemetryPrefix("request.type"), request.HandlerName),
+		attribute.String(ewp.applyTelemetryPrefix("correlation_id"), request.CorrelationID),
+		attribute.Stringer(ewp.applyTelemetryPrefix("request.queue.name"), ewp.queueName),
 	}
 
 	if request.EventEntityID != "" {
-		traceAttrs = append(traceAttrs, attribute.String(e.applyTelemetryPrefix("request.event.entity.id"), request.EventEntityID))
+		traceAttrs = append(traceAttrs, attribute.String(ewp.applyTelemetryPrefix("request.event.entity.id"), request.EventEntityID))
 	}
 
-	ctx, span := e.tracer.Start(
+	ctx, span := ewp.tracer.Start(
 		ctx,
 		fmt.Sprintf("execute %s request", request.HandlerName),
 		trace.WithAttributes(traceAttrs...),
@@ -246,7 +404,7 @@ func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) 
 
 	logger.DebugContext(ctx, fmt.Sprintf("executing %s request", request.HandlerName))
 
-	ctx, request, err := e.beforeExecute(ctx, request)
+	ctx, request, err := ewp.beforeExecute(ctx, request)
 	if err != nil {
 		logger.ErrorContext(ctx, "error running before execute", Err(err))
 		span.RecordError(err)
@@ -254,7 +412,7 @@ func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) 
 		return
 	}
 
-	err = e.store.Transaction(ctx, func(txStore Storer) error {
+	err = ewp.store.Transaction(ctx, func(txStore Storer) error {
 		request, err := txStore.HandlerRequests().FindByIDForUpdate(ctx, request.ID, true)
 		if err != nil {
 			// Locked rows are skipped, so do not error on not found.
@@ -269,22 +427,22 @@ func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) 
 			return nil
 		}
 
-		config := e.configMap[request.EventName][request.HandlerName]
+		config := ewp.configMap[request.EventName][request.HandlerName]
 		if config == nil {
 			config = &HandlerConfig{}
 		}
 
 		metricAttrs := []attribute.KeyValue{
-			attribute.Stringer(e.applyTelemetryPrefix("request.event.type"), request.EventName),
-			attribute.Stringer(e.applyTelemetryPrefix("request.type"), request.HandlerName),
+			attribute.Stringer(ewp.applyTelemetryPrefix("request.event.type"), request.EventName),
+			attribute.Stringer(ewp.applyTelemetryPrefix("request.type"), request.HandlerName),
 		}
 
 		err = request.execute(ctx, config)
 		if err != nil {
 			isRetryable := errors.Is(err, ErrRetryable)
 			metricAttrs = append(metricAttrs,
-				attribute.Bool(e.applyTelemetryPrefix("request.retryable"), isRetryable),
-				attribute.Int(e.applyTelemetryPrefix("request.errors"), request.Errors),
+				attribute.Bool(ewp.applyTelemetryPrefix("request.retryable"), isRetryable),
+				attribute.Int(ewp.applyTelemetryPrefix("request.errors"), request.Errors),
 			)
 
 			var logLevel slog.Level
@@ -307,9 +465,9 @@ func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) 
 				span.SetStatus(codes.Error, "error while executing handler request")
 			}
 
-			e.failureCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
+			ewp.failureCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
 		} else {
-			e.successCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
+			ewp.successCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
 		}
 
 		err = txStore.HandlerRequests().Update(ctx, request)
@@ -318,7 +476,7 @@ func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) 
 		}
 
 		if request.CompletedAt != nil {
-			e.timeHistogram.Record(ctx, request.CompletedAt.Sub(request.EventTimestamp).Seconds(), metric.WithAttributes(metricAttrs...))
+			ewp.timeHistogram.Record(ctx, request.CompletedAt.Sub(request.EventTimestamp).Seconds(), metric.WithAttributes(metricAttrs...))
 		}
 
 		return nil
@@ -330,29 +488,89 @@ func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) 
 	}
 }
 
-func (p *Executor) registerMeterCallbacks() error {
+func (ewp *executorWorkerPool) shutdown() {
+	ewp.shutdownChan <- true
+}
+
+type executorStatsObserver struct {
+	deadCountGauge             metric.Int64ObservableGauge
+	meter                      metric.Meter
+	meterCallbackRegistrations []metric.Registration
+	store                      Storer
+	telemetryPrefix            string
+	unexecutedCountGauge       metric.Int64ObservableGauge
+	unexecutedMaxAgeGauge      metric.Float64ObservableGauge
+}
+
+func newExecutorStatsObserver(
+	store Storer,
+	telemetryPrefix string,
+) (*executorStatsObserver, error) {
+	eso := &executorStatsObserver{
+		meter:           otel.GetMeterProvider().Meter("github.com/authorhealth/events/v2"),
+		store:           store,
+		telemetryPrefix: telemetryPrefix,
+	}
+
+	var err error
+	eso.unexecutedCountGauge, err = eso.meter.Int64ObservableGauge(
+		eso.applyTelemetryPrefix("requests.unexecuted.count"),
+		metric.WithDescription("The number of unexecuted requests in the queue."),
+		metric.WithUnit("{request}"))
+	if err != nil {
+		return nil, fmt.Errorf("constructing unexecuted request count gauge: %w", err)
+	}
+
+	eso.unexecutedMaxAgeGauge, err = eso.meter.Float64ObservableGauge(
+		eso.applyTelemetryPrefix("requests.unexecuted.max_age"),
+		metric.WithDescription("The age of the oldest unexecuted request in the queue."),
+		metric.WithUnit("s"))
+	if err != nil {
+		return nil, fmt.Errorf("constructing max unexecuted request age gauge: %w", err)
+	}
+
+	eso.deadCountGauge, err = eso.meter.Int64ObservableGauge(
+		eso.applyTelemetryPrefix("requests.dead.count"),
+		metric.WithDescription("The number of dead requests in the queue."),
+		metric.WithUnit("{request}"))
+	if err != nil {
+		return nil, fmt.Errorf("constructing dead request count gauge: %w", err)
+	}
+
+	return eso, nil
+}
+
+func (eso *executorStatsObserver) applyTelemetryPrefix(k string) string {
+	if len(eso.telemetryPrefix) > 0 {
+		return fmt.Sprintf("%s.%s", eso.telemetryPrefix, k)
+	}
+
+	return k
+}
+
+func (eso *executorStatsObserver) registerMeterCallbacks() error {
 	var registrations []metric.Registration
-	registration, err := p.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
-		count, err := p.store.HandlerRequests().CountUnexecuted(ctx)
+	registration, err := eso.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+		count, err := eso.store.HandlerRequests().CountUnexecuted(ctx)
 		if err != nil {
 			return fmt.Errorf("counting unexecuted requests: %w", err)
 		}
 
-		o.ObserveInt64(p.unexecutedCountGauge, int64(count))
+		o.ObserveInt64(eso.unexecutedCountGauge, int64(count))
 
 		return nil
-	}, p.unexecutedCountGauge)
+	}, eso.unexecutedCountGauge)
 	if err != nil {
 		return fmt.Errorf("registering callback for unexecuted request count guage: %w", err)
 	}
 
 	registrations = append(registrations, registration)
 
-	registration, err = p.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
-		oldest, err := p.store.HandlerRequests().FindOldestUnexecuted(ctx)
+	registration, err = eso.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+		oldest, err := eso.store.HandlerRequests().FindOldestUnexecuted(ctx)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
-				o.ObserveFloat64(p.unexecutedMaxAgeGauge, 0)
+				o.ObserveFloat64(eso.unexecutedMaxAgeGauge, 0)
 
 				return nil
 			}
@@ -360,46 +578,203 @@ func (p *Executor) registerMeterCallbacks() error {
 			return fmt.Errorf("finding oldest unexecuted request: %w", err)
 		}
 
-		o.ObserveFloat64(p.unexecutedMaxAgeGauge, time.Since(oldest.EventTimestamp).Seconds())
+		o.ObserveFloat64(eso.unexecutedMaxAgeGauge, time.Since(oldest.EventTimestamp).Seconds())
 
 		return nil
-	}, p.unexecutedMaxAgeGauge)
+	}, eso.unexecutedMaxAgeGauge)
 	if err != nil {
 		return fmt.Errorf("registering callback for max unexecuted request age gauge: %w", err)
 	}
 
 	registrations = append(registrations, registration)
 
-	registration, err = p.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
-		count, err := p.store.HandlerRequests().CountDead(ctx)
+	registration, err = eso.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+		count, err := eso.store.HandlerRequests().CountDead(ctx)
 		if err != nil {
 			return fmt.Errorf("counting dead requests: %w", err)
 		}
 
-		o.ObserveInt64(p.deadCountGauge, int64(count))
+		o.ObserveInt64(eso.deadCountGauge, int64(count))
 
 		return nil
-	}, p.deadCountGauge)
+	}, eso.deadCountGauge)
 	if err != nil {
 		return fmt.Errorf("registering callback for dead request count guage: %w", err)
 	}
 
 	registrations = append(registrations, registration)
 
-	p.meterCallbackRegistrations = registrations
+	eso.meterCallbackRegistrations = registrations
 
 	return nil
 }
 
-func (p *Executor) unregisterMeterCallbacks() error {
-	for _, registration := range p.meterCallbackRegistrations {
+func (eso *executorStatsObserver) unregisterMeterCallbacks() error {
+	for _, registration := range eso.meterCallbackRegistrations {
 		err := registration.Unregister()
 		if err != nil {
 			return fmt.Errorf("unregistering meter callback: %w", err)
 		}
 	}
 
-	p.meterCallbackRegistrations = nil
+	eso.meterCallbackRegistrations = nil
+
+	return nil
+}
+
+type executorQueueStatsObserver struct {
+	deadCountGauge             metric.Int64ObservableGauge
+	meter                      metric.Meter
+	meterCallbackRegistrations []metric.Registration
+	queueName                  ExecutorQueueName
+	store                      Storer
+	telemetryPrefix            string
+	unexecutedCountGauge       metric.Int64ObservableGauge
+	unexecutedMaxAgeGauge      metric.Float64ObservableGauge
+}
+
+func newExecutorQueueStatsObserver(
+	store Storer,
+	telemetryPrefix string,
+	queueName ExecutorQueueName,
+) (*executorQueueStatsObserver, error) {
+	eqso := &executorQueueStatsObserver{
+		meter:           otel.GetMeterProvider().Meter("github.com/authorhealth/events/v2"),
+		queueName:       queueName,
+		store:           store,
+		telemetryPrefix: telemetryPrefix,
+	}
+
+	var err error
+	eqso.unexecutedCountGauge, err = eqso.meter.Int64ObservableGauge(
+		eqso.applyTelemetryPrefix("requests.unexecuted.count"),
+		metric.WithDescription("The number of unexecuted requests in the queue."),
+		metric.WithUnit("{request}"))
+	if err != nil {
+		return nil, fmt.Errorf("constructing unexecuted request count gauge: %w", err)
+	}
+
+	eqso.unexecutedMaxAgeGauge, err = eqso.meter.Float64ObservableGauge(
+		eqso.applyTelemetryPrefix("requests.unexecuted.max_age"),
+		metric.WithDescription("The age of the oldest unexecuted request in the queue."),
+		metric.WithUnit("s"))
+	if err != nil {
+		return nil, fmt.Errorf("constructing max unexecuted request age gauge: %w", err)
+	}
+
+	eqso.deadCountGauge, err = eqso.meter.Int64ObservableGauge(
+		eqso.applyTelemetryPrefix("requests.dead.count"),
+		metric.WithDescription("The number of dead requests in the queue."),
+		metric.WithUnit("{request}"))
+	if err != nil {
+		return nil, fmt.Errorf("constructing dead request count gauge: %w", err)
+	}
+
+	return eqso, nil
+}
+
+func (eqso *executorQueueStatsObserver) applyTelemetryPrefix(k string) string {
+	if len(eqso.telemetryPrefix) > 0 {
+		return fmt.Sprintf("%s.%s", eqso.telemetryPrefix, k)
+	}
+
+	return k
+}
+
+func (eqso *executorQueueStatsObserver) registerMeterCallbacks() error {
+	var registrations []metric.Registration
+	registration, err := eqso.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+		count, err := eqso.store.HandlerRequests().CountUnexecutedByQueue(ctx, eqso.queueName)
+		if err != nil {
+			return fmt.Errorf("counting unexecuted requests by queue: %w", err)
+		}
+
+		o.ObserveInt64(
+			eqso.unexecutedCountGauge,
+			int64(count),
+			metric.WithAttributes(
+				attribute.Stringer(eqso.applyTelemetryPrefix("request.queue.name"), eqso.queueName),
+			),
+		)
+
+		return nil
+	}, eqso.unexecutedCountGauge)
+	if err != nil {
+		return fmt.Errorf("registering callback for unexecuted request count guage: %w", err)
+	}
+
+	registrations = append(registrations, registration)
+
+	registration, err = eqso.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+		oldest, err := eqso.store.HandlerRequests().FindOldestUnexecutedByQueue(ctx, eqso.queueName)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				o.ObserveFloat64(
+					eqso.unexecutedMaxAgeGauge,
+					0,
+					metric.WithAttributes(
+						attribute.Stringer(eqso.applyTelemetryPrefix("request.queue.name"), eqso.queueName),
+					),
+				)
+
+				return nil
+			}
+
+			return fmt.Errorf("finding oldest unexecuted request by queue: %w", err)
+		}
+
+		o.ObserveFloat64(
+			eqso.unexecutedMaxAgeGauge,
+			time.Since(oldest.EventTimestamp).Seconds(),
+			metric.WithAttributes(
+				attribute.Stringer(eqso.applyTelemetryPrefix("request.queue.name"), eqso.queueName),
+			),
+		)
+
+		return nil
+	}, eqso.unexecutedMaxAgeGauge)
+	if err != nil {
+		return fmt.Errorf("registering callback for max unexecuted request age gauge: %w", err)
+	}
+
+	registrations = append(registrations, registration)
+
+	registration, err = eqso.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+		count, err := eqso.store.HandlerRequests().CountDeadByQueue(ctx, eqso.queueName)
+		if err != nil {
+			return fmt.Errorf("counting dead requests by queue: %w", err)
+		}
+
+		o.ObserveInt64(
+			eqso.deadCountGauge,
+			int64(count),
+			metric.WithAttributes(
+				attribute.Stringer(eqso.applyTelemetryPrefix("request.queue.name"), eqso.queueName),
+			),
+		)
+
+		return nil
+	}, eqso.deadCountGauge)
+	if err != nil {
+		return fmt.Errorf("registering callback for dead request count guage: %w", err)
+	}
+
+	registrations = append(registrations, registration)
+
+	eqso.meterCallbackRegistrations = registrations
+
+	return nil
+}
+
+func (eqso *executorQueueStatsObserver) unregisterMeterCallbacks() error {
+	for _, registration := range eqso.meterCallbackRegistrations {
+		err := registration.Unregister()
+		if err != nil {
+			return fmt.Errorf("unregistering meter callback: %w", err)
+		}
+	}
+
+	eqso.meterCallbackRegistrations = nil
 
 	return nil
 }

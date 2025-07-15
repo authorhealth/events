@@ -6,10 +6,11 @@ const (
 )
 
 type HandlerConfig struct {
-	BackoffFunction BackoffFunc // The backoff function to call when execution fails.
-	Handler         *Handler    // The handler for the event.
-	MaxErrors       int         // The maximum error limit for the handler.
-	Priority        int         // The priority rank of the handler.
+	BackoffFunction BackoffFunc       // The backoff function to call when execution fails.
+	Handler         *Handler          // The handler for the event.
+	MaxErrors       int               // The maximum error limit for the handler.
+	QueueName       ExecutorQueueName // The name of the executor queue where the handler request will be executed.
+	Priority        int               // The priority rank of the handler.
 }
 
 type HandlerConfigOption func(handlerConfig *HandlerConfig)
@@ -32,6 +33,12 @@ func WithPriority(priority int) HandlerConfigOption {
 	}
 }
 
+func WithQueue(queueName ExecutorQueueName) HandlerConfigOption {
+	return func(handlerConfig *HandlerConfig) {
+		handlerConfig.QueueName = queueName
+	}
+}
+
 type HandlerConfigMap map[HandlerName]*HandlerConfig
 
 type HandlerConfigMapOption func(handlerConfigMap HandlerConfigMap)
@@ -44,6 +51,7 @@ func WithHandler(handler *Handler, options ...HandlerConfigOption) HandlerConfig
 		if handlerConfig == nil {
 			handlerConfig = &HandlerConfig{
 				MaxErrors: defaultMaxErrors,
+				QueueName: DefaultExecutorQueueName,
 				Priority:  defaultPriority,
 			}
 			handlerConfigMap[handlerName] = handlerConfig

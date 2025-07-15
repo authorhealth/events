@@ -26,25 +26,34 @@ var ErrRetryable = errors.New("event failed to process but is retryable")
 // If an error is returned, the event will not be processed.
 type BeforeProcessHook func(context.Context, *Event) (context.Context, *Event, error)
 
-// Processor provides a way to process events from a Storer.
+// Processor provides a standard interface for processing events.
+type Processor interface {
+	processEvents(ctx context.Context)
+	registerMeterCallbacks() error
+	shutdown()
+	unregisterMeterCallbacks() error
+}
+
+// DefaultProcessor provides a way to process events from a Storer.
 // It uses a configurable number of worker goroutines to process events concurrently.
 // Before processing, a BeforeProcessHook can be used to modify the event or context.
-// The Processor also provides metrics for monitoring the processing of events.
+// The DefaultProcessor also provides metrics for monitoring the processing of events.
 //
-// The Processor starts by retrieving unprocessed events from the Storer.
+// The DefaultProcessor starts by retrieving unprocessed events from the Storer.
 // For each event, it acquires a worker from a pool of workers. If no worker is available, it waits until one becomes available.
 // Once a worker is acquired, the event is processed. After processing, the worker is released back to the pool.
 //
 // The processing of an event involves creating handler execution requests for the event based on the set of handlers defined in the ConfigMap.
 // If the handler execution requests are created successfully, the event is marked as processed.
-type Processor struct {
+type DefaultProcessor struct {
 	beforeProcessHook          BeforeProcessHook
 	configMap                  ConfigMap
 	failureCounter             metric.Int64Counter
+	limit                      int
 	meter                      metric.Meter
 	meterCallbackRegistrations []metric.Registration
 	numProcessorWorkers        int
-	shutdown                   chan bool
+	shutdownChan               chan bool
 	store                      Storer
 	successCounter             metric.Int64Counter
 	telemetryPrefix            string
@@ -54,7 +63,9 @@ type Processor struct {
 	unprocessedMaxAgeGauge     metric.Float64ObservableGauge
 }
 
-// NewProcessor creates a new event processor.
+var _ Processor = (*DefaultProcessor)(nil)
+
+// NewDefaultProcessor creates a new DefaultProcessor.
 //
 // store is the Storer used to store and retrieve events.
 //
@@ -70,24 +81,26 @@ type Processor struct {
 //
 // numProcessorWorkers configures the number of worker goroutines that process
 // events. If numProcessorWorkers is <= 0, it defaults to 2.
-func NewProcessor(
+func NewDefaultProcessor(
 	store Storer,
 	conf ConfigMap,
 	beforeProcessHook BeforeProcessHook,
 	telemetryPrefix string,
 	numProcessorWorkers int,
-) (*Processor, error) {
+	limit int,
+) (*DefaultProcessor, error) {
 	if numProcessorWorkers <= 0 {
 		numProcessorWorkers = defaultNumProcessorWorkers
 	}
 
-	p := &Processor{
+	p := &DefaultProcessor{
 		beforeProcessHook:   beforeProcessHook,
 		configMap:           conf,
 		store:               store,
+		limit:               limit,
 		meter:               otel.GetMeterProvider().Meter("github.com/authorhealth/events/v2"),
 		numProcessorWorkers: numProcessorWorkers,
-		shutdown:            make(chan bool, 1),
+		shutdownChan:        make(chan bool, 1),
 		telemetryPrefix:     telemetryPrefix,
 		tracer:              otel.GetTracerProvider().Tracer("github.com/authorhealth/events/v2"),
 	}
@@ -137,7 +150,7 @@ func NewProcessor(
 	return p, nil
 }
 
-func (p *Processor) beforeProcess(ctx context.Context, event *Event) (context.Context, *Event, error) {
+func (p *DefaultProcessor) beforeProcess(ctx context.Context, event *Event) (context.Context, *Event, error) {
 	if p.beforeProcessHook == nil {
 		return ctx, event, nil
 	}
@@ -145,7 +158,7 @@ func (p *Processor) beforeProcess(ctx context.Context, event *Event) (context.Co
 	return p.beforeProcessHook(ctx, event)
 }
 
-func (p *Processor) applyTelemetryPrefix(k string) string {
+func (p *DefaultProcessor) applyTelemetryPrefix(k string) string {
 	if len(p.telemetryPrefix) > 0 {
 		return fmt.Sprintf("%s.%s", p.telemetryPrefix, k)
 	}
@@ -153,11 +166,11 @@ func (p *Processor) applyTelemetryPrefix(k string) string {
 	return k
 }
 
-func (p *Processor) processEvents(ctx context.Context, limit int) {
+func (p *DefaultProcessor) processEvents(ctx context.Context) {
 	ctx, span := p.tracer.Start(ctx, "process events")
 	defer span.End()
 
-	events, err := p.store.Events().FindUnprocessed(ctx, limit)
+	events, err := p.store.Events().FindUnprocessed(ctx, p.limit)
 	if err != nil {
 		slog.ErrorContext(ctx, "error finding unprocessed events", Err(err))
 		span.RecordError(err)
@@ -167,15 +180,15 @@ func (p *Processor) processEvents(ctx context.Context, limit int) {
 
 	var wg sync.WaitGroup
 	defer wg.Wait()
-	workers := make(chan struct{}, p.numProcessorWorkers)
+	workers := make(chan bool, p.numProcessorWorkers)
 
 	for _, event := range events {
 		select {
-		case <-p.shutdown:
+		case <-p.shutdownChan:
 			return
 
 		default:
-			workers <- struct{}{}
+			workers <- true
 
 			event := event
 			wg.Add(1)
@@ -191,7 +204,7 @@ func (p *Processor) processEvents(ctx context.Context, limit int) {
 	}
 }
 
-func (p *Processor) processEvent(ctx context.Context, event *Event) {
+func (p *DefaultProcessor) processEvent(ctx context.Context, event *Event) {
 	traceAttrs := []attribute.KeyValue{
 		attribute.String(p.applyTelemetryPrefix("event.id"), event.ID),
 		attribute.String(p.applyTelemetryPrefix("event.type"), event.Name.String()),
@@ -261,6 +274,7 @@ func (p *Processor) processEvent(ctx context.Context, event *Event) {
 				handlerName,
 				handlerConfig.MaxErrors,
 				handlerConfig.Priority,
+				handlerConfig.QueueName,
 			)
 
 			if err != nil {
@@ -297,7 +311,7 @@ func (p *Processor) processEvent(ctx context.Context, event *Event) {
 	}
 }
 
-func (p *Processor) registerMeterCallbacks() error {
+func (p *DefaultProcessor) registerMeterCallbacks() error {
 	var registrations []metric.Registration
 	registration, err := p.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
 		count, err := p.store.Events().CountUnprocessed(ctx)
@@ -342,7 +356,11 @@ func (p *Processor) registerMeterCallbacks() error {
 	return nil
 }
 
-func (p *Processor) unregisterMeterCallbacks() error {
+func (p *DefaultProcessor) shutdown() {
+	p.shutdownChan <- true
+}
+
+func (p *DefaultProcessor) unregisterMeterCallbacks() error {
 	for _, registration := range p.meterCallbackRegistrations {
 		err := registration.Unregister()
 		if err != nil {
