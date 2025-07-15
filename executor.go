@@ -46,8 +46,8 @@ type ExecutorQueueName string
 
 const DefaultExecutorQueueName ExecutorQueueName = "default"
 
-func (epn ExecutorQueueName) String() string {
-	return string(epn)
+func (eqn ExecutorQueueName) String() string {
+	return string(eqn)
 }
 
 // Executor provides a standard interface for executing requests.

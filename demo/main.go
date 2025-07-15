@@ -28,7 +28,7 @@ const (
 var concurrent bool
 
 func init() {
-	flag.BoolVar(&concurrent, "concurrent", false, "if true, uses concurrent scheduler and pool executors")
+	flag.BoolVar(&concurrent, "concurrent", false, "if true, uses concurrent scheduler and queue executors")
 }
 
 func main() {
