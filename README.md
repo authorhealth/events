@@ -15,7 +15,7 @@
 
 ## Getting Started
 
-To integrate the framework into your application, see the [demo/main.go](https://www.google.com/search?q=demo/main.go) file for a complete example.
+To integrate the framework into your application, see the [demo/main.go](demo/main.go) file for a complete example.
 
 ### Installation
 
