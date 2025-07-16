@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -18,6 +19,28 @@ type HandlerName string
 
 func (n HandlerName) String() string {
 	return string(n)
+}
+
+type HandlerPanicError struct {
+	panicMsg any
+	stack    string
+}
+
+var _ error = (*HandlerPanicError)(nil)
+
+func NewHandlerPanicError(panicMsg any, stack string) *HandlerPanicError {
+	return &HandlerPanicError{
+		panicMsg: panicMsg,
+		stack:    stack,
+	}
+}
+
+func (e *HandlerPanicError) Error() string {
+	return fmt.Sprintf("recovered panic while executing handler request: %v\n%s", e.panicMsg, e.stack)
+}
+
+func (e *HandlerPanicError) Stack() string {
+	return e.stack
 }
 
 type Handler struct {
@@ -73,9 +96,17 @@ func (h *Handler) Name() HandlerName {
 	return h.name
 }
 
-func (h *Handler) Do(ctx context.Context, request *HandlerRequest) error {
+func (h *Handler) Do(ctx context.Context, request *HandlerRequest) (err error) {
 	ctx, span := h.tracer.Start(ctx, fmt.Sprintf("%s handler", h.name))
 	defer span.End()
+
+	defer func() {
+		if rvr := recover(); rvr != nil {
+			err = NewHandlerPanicError(rvr, string(debug.Stack()))
+			span.SetAttributes(attribute.String(h.applyTelemetryPrefix("request.event.panic"), fmt.Sprintf("%v", rvr)))
+			span.SetStatus(codes.Error, "recovered panic while executing handler request")
+		}
+	}()
 
 	metricAttrs := []attribute.KeyValue{
 		attribute.Stringer(h.applyTelemetryPrefix("event_handler.name"), h.name),
@@ -83,7 +114,7 @@ func (h *Handler) Do(ctx context.Context, request *HandlerRequest) error {
 	}
 
 	start := time.Now()
-	err := h.f(ctx, request)
+	err = h.f(ctx, request)
 	duration := time.Since(start)
 
 	if err != nil {

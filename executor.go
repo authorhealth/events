@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
-	"runtime/debug"
 	"sync"
 	"time"
 
@@ -285,22 +284,6 @@ func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) 
 			attribute.Stringer(e.applyTelemetryPrefix("request.event.type"), request.EventName),
 			attribute.Stringer(e.applyTelemetryPrefix("request.type"), request.HandlerName),
 		}
-
-		defer func() {
-			if rvr := recover(); rvr != nil {
-				logger.ErrorContext(
-					ctx,
-					"recovered panic while executing handler request",
-					slog.Any("panic", rvr),
-					slog.String("stack", string(debug.Stack())),
-				)
-
-				span.SetAttributes(attribute.String(e.applyTelemetryPrefix("request.event.panic"), fmt.Sprintf("%v", rvr)))
-				span.SetStatus(codes.Error, "recovered panic while executing handler request")
-
-				e.failureCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
-			}
-		}()
 
 		err = request.execute(ctx, config)
 		if err != nil {
