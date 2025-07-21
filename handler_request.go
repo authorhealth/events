@@ -52,9 +52,9 @@ func (r *HandlerRequest) Cancel() {
 	r.CanceledAt = Ptr(time.Now())
 }
 
-func (e *HandlerRequest) Reexecute() {
-	e.BackoffUntil = nil
-	e.Errors = 0
+func (r *HandlerRequest) Reexecute() {
+	r.BackoffUntil = nil
+	r.Errors = 0
 }
 
 func (r *HandlerRequest) execute(ctx context.Context, config *HandlerConfig) error {
@@ -64,6 +64,10 @@ func (r *HandlerRequest) execute(ctx context.Context, config *HandlerConfig) err
 
 	if r.CompletedAt != nil {
 		return errors.New("handler request is already completed")
+	}
+
+	if config.Handler == nil {
+		return errors.New("handler request does not have a handler configured")
 	}
 
 	handler := config.Handler

@@ -36,6 +36,10 @@ func DefaultBackoffFunc(request *HandlerRequest) time.Time {
 
 var _ BackoffFunc = DefaultBackoffFunc
 
+var missingHandlerFunc HandlerFunc = func(ctx context.Context, hr *HandlerRequest) error {
+	return errors.New("handler request has no configured handler")
+}
+
 // BeforeExecuteHook is a function that is called before a handler request is executed.
 // It can be used to modify the given context or request before it is executed.
 // If an error is returned, the request will not be executed.
@@ -271,7 +275,9 @@ func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) 
 
 		config := e.configMap[request.EventName][request.HandlerName]
 		if config == nil {
-			config = &HandlerConfig{}
+			config = &HandlerConfig{
+				Handler: NewHandler(request.HandlerName, e.telemetryPrefix, missingHandlerFunc),
+			}
 		}
 
 		metricAttrs := []attribute.KeyValue{
