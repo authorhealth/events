@@ -434,7 +434,7 @@ func (ewp *executorWorkerPool) executeRequest(ctx context.Context, request *Hand
 		config := ewp.configMap[request.EventName][request.HandlerName]
 		if config == nil {
 			config = &HandlerConfig{
-				Handler: NewHandler(request.HandlerName, e.telemetryPrefix, missingHandlerFunc),
+				Handler: NewHandler(request.HandlerName, ewp.telemetryPrefix, missingHandlerFunc),
 			}
 		}
 
