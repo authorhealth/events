@@ -28,7 +28,12 @@ type HandlerRequest struct {
 	Priority        int            // The priority rank of the request.
 }
 
-func NewHandlerRequest(event *Event, handlerName HandlerName, maxErrors int, priority int) (*HandlerRequest, error) {
+func NewHandlerRequest(
+	event *Event,
+	handlerName HandlerName,
+	maxErrors int,
+	priority int,
+) (*HandlerRequest, error) {
 	if len(handlerName) == 0 {
 		return nil, errors.New("handlerName is empty")
 	}

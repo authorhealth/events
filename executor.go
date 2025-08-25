@@ -45,27 +45,36 @@ var missingHandlerFunc HandlerFunc = func(ctx context.Context, hr *HandlerReques
 // If an error is returned, the request will not be executed.
 type BeforeExecuteHook func(context.Context, *HandlerRequest) (context.Context, *HandlerRequest, error)
 
-// Executor provides a way to execute requests from a Storer.
+// Executor provides a standard interface for executing requests.
+type Executor interface {
+	executeRequests(ctx context.Context)
+	registerMeterCallbacks() error
+	shutdown()
+	unregisterMeterCallbacks() error
+}
+
+// DefaultExecutor provides a way to execute requests from a Storer.
 // It uses a configurable number of worker goroutines to execute requests concurrently.
 // Before execution, a BeforeExecuteHook can be used to modify the request or context.
-// The Executor also provides metrics for monitoring the execution of requests.
+// The DefaultExecutor also provides metrics for monitoring the execution of requests.
 //
-// The Executor starts by retrieving unexecuted requests from the Storer.
+// The DefaultExecutor starts by retrieving unexecuted requests from the Storer.
 // For each request, it acquires a worker from a pool of workers. If no worker is available, it waits until one becomes available.
 // Once a worker is acquired, the request is executed. After execution, the worker is released back to the pool.
 //
 // The execution of a handler request involves running a set of handlers defined in the ConfigMap.
 // If any handler returns an error, the request is marked as failed.
 // If all handlers complete successfully, the request is marked as executed.
-type Executor struct {
+type DefaultExecutor struct {
 	beforeExecuteHook          BeforeExecuteHook
 	configMap                  ConfigMap
 	deadCountGauge             metric.Int64ObservableGauge
 	failureCounter             metric.Int64Counter
+	limit                      int
 	meter                      metric.Meter
 	meterCallbackRegistrations []metric.Registration
 	numExecutorWorkers         int
-	shutdown                   chan bool
+	shutdownChan               chan bool
 	store                      Storer
 	successCounter             metric.Int64Counter
 	telemetryPrefix            string
@@ -75,7 +84,9 @@ type Executor struct {
 	unexecutedMaxAgeGauge      metric.Float64ObservableGauge
 }
 
-// NewExecutor creates a new request executor.
+var _ Executor = (*DefaultExecutor)(nil)
+
+// NewDefaultExecutor creates a new DefaultExecutor.
 //
 // store is the Storer used to store and retrieve requests.
 //
@@ -92,25 +103,27 @@ type Executor struct {
 //
 // numExecutorWorkers configures the number of worker goroutines that execute
 // requests. If numExecutorWorkers is <= 0, it defaults to 2.
-func NewExecutor(
+func NewDefaultExecutor(
 	store Storer,
 	conf ConfigMap,
 	beforeExecuteHook BeforeExecuteHook,
 	telemetryPrefix string,
 	numExecutorWorkers int,
-) (*Executor, error) {
+	limit int,
+) (*DefaultExecutor, error) {
 	if numExecutorWorkers <= 0 {
 		numExecutorWorkers = defaultNumExecutorWorkers
 	}
 
-	e := &Executor{
+	e := &DefaultExecutor{
 		beforeExecuteHook:  beforeExecuteHook,
 		configMap:          conf,
+		limit:              limit,
 		meter:              otel.GetMeterProvider().Meter("github.com/authorhealth/events/v2"),
 		numExecutorWorkers: numExecutorWorkers,
 		store:              store,
 		telemetryPrefix:    telemetryPrefix,
-		shutdown:           make(chan bool, 1),
+		shutdownChan:       make(chan bool, 1),
 		tracer:             otel.GetTracerProvider().Tracer("github.com/authorhealth/events/v2"),
 	}
 
@@ -167,7 +180,7 @@ func NewExecutor(
 	return e, nil
 }
 
-func (e *Executor) beforeExecute(ctx context.Context, request *HandlerRequest) (context.Context, *HandlerRequest, error) {
+func (e *DefaultExecutor) beforeExecute(ctx context.Context, request *HandlerRequest) (context.Context, *HandlerRequest, error) {
 	if e.beforeExecuteHook == nil {
 		return ctx, request, nil
 	}
@@ -175,7 +188,7 @@ func (e *Executor) beforeExecute(ctx context.Context, request *HandlerRequest) (
 	return e.beforeExecuteHook(ctx, request)
 }
 
-func (e *Executor) applyTelemetryPrefix(k string) string {
+func (e *DefaultExecutor) applyTelemetryPrefix(k string) string {
 	if len(e.telemetryPrefix) > 0 {
 		return fmt.Sprintf("%s.%s", e.telemetryPrefix, k)
 	}
@@ -183,11 +196,11 @@ func (e *Executor) applyTelemetryPrefix(k string) string {
 	return k
 }
 
-func (e *Executor) executeRequests(ctx context.Context, limit int) {
+func (e *DefaultExecutor) executeRequests(ctx context.Context) {
 	ctx, span := e.tracer.Start(ctx, "execute requests")
 	defer span.End()
 
-	requests, err := e.store.HandlerRequests().FindUnexecuted(ctx, limit)
+	requests, err := e.store.HandlerRequests().FindUnexecuted(ctx, e.limit)
 	if err != nil {
 		slog.ErrorContext(ctx, "error finding unexecuted requests", Err(err))
 		span.RecordError(err)
@@ -197,11 +210,12 @@ func (e *Executor) executeRequests(ctx context.Context, limit int) {
 
 	var wg sync.WaitGroup
 	defer wg.Wait()
+
 	workers := make(chan struct{}, e.numExecutorWorkers)
 
 	for _, request := range requests {
 		select {
-		case <-e.shutdown:
+		case <-e.shutdownChan:
 			return
 
 		default:
@@ -221,7 +235,7 @@ func (e *Executor) executeRequests(ctx context.Context, limit int) {
 	}
 }
 
-func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) {
+func (e *DefaultExecutor) executeRequest(ctx context.Context, request *HandlerRequest) {
 	traceAttrs := []attribute.KeyValue{
 		attribute.String(e.applyTelemetryPrefix("request.id"), request.ID),
 		attribute.String(e.applyTelemetryPrefix("request.event.id"), request.EventID),
@@ -336,29 +350,33 @@ func (e *Executor) executeRequest(ctx context.Context, request *HandlerRequest) 
 	}
 }
 
-func (p *Executor) registerMeterCallbacks() error {
+func (e *DefaultExecutor) shutdown() {
+	e.shutdownChan <- true
+}
+
+func (e *DefaultExecutor) registerMeterCallbacks() error {
 	var registrations []metric.Registration
-	registration, err := p.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
-		count, err := p.store.HandlerRequests().CountUnexecuted(ctx)
+	registration, err := e.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+		count, err := e.store.HandlerRequests().CountUnexecuted(ctx)
 		if err != nil {
 			return fmt.Errorf("counting unexecuted requests: %w", err)
 		}
 
-		o.ObserveInt64(p.unexecutedCountGauge, int64(count))
+		o.ObserveInt64(e.unexecutedCountGauge, int64(count))
 
 		return nil
-	}, p.unexecutedCountGauge)
+	}, e.unexecutedCountGauge)
 	if err != nil {
 		return fmt.Errorf("registering callback for unexecuted request count guage: %w", err)
 	}
 
 	registrations = append(registrations, registration)
 
-	registration, err = p.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
-		oldest, err := p.store.HandlerRequests().FindOldestUnexecuted(ctx)
+	registration, err = e.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+		oldest, err := e.store.HandlerRequests().FindOldestUnexecuted(ctx)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
-				o.ObserveFloat64(p.unexecutedMaxAgeGauge, 0)
+				o.ObserveFloat64(e.unexecutedMaxAgeGauge, 0)
 
 				return nil
 			}
@@ -366,46 +384,46 @@ func (p *Executor) registerMeterCallbacks() error {
 			return fmt.Errorf("finding oldest unexecuted request: %w", err)
 		}
 
-		o.ObserveFloat64(p.unexecutedMaxAgeGauge, time.Since(oldest.EventTimestamp).Seconds())
+		o.ObserveFloat64(e.unexecutedMaxAgeGauge, time.Since(oldest.EventTimestamp).Seconds())
 
 		return nil
-	}, p.unexecutedMaxAgeGauge)
+	}, e.unexecutedMaxAgeGauge)
 	if err != nil {
 		return fmt.Errorf("registering callback for max unexecuted request age gauge: %w", err)
 	}
 
 	registrations = append(registrations, registration)
 
-	registration, err = p.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
-		count, err := p.store.HandlerRequests().CountDead(ctx)
+	registration, err = e.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+		count, err := e.store.HandlerRequests().CountDead(ctx)
 		if err != nil {
 			return fmt.Errorf("counting dead requests: %w", err)
 		}
 
-		o.ObserveInt64(p.deadCountGauge, int64(count))
+		o.ObserveInt64(e.deadCountGauge, int64(count))
 
 		return nil
-	}, p.deadCountGauge)
+	}, e.deadCountGauge)
 	if err != nil {
 		return fmt.Errorf("registering callback for dead request count guage: %w", err)
 	}
 
 	registrations = append(registrations, registration)
 
-	p.meterCallbackRegistrations = registrations
+	e.meterCallbackRegistrations = registrations
 
 	return nil
 }
 
-func (p *Executor) unregisterMeterCallbacks() error {
-	for _, registration := range p.meterCallbackRegistrations {
+func (e *DefaultExecutor) unregisterMeterCallbacks() error {
+	for _, registration := range e.meterCallbackRegistrations {
 		err := registration.Unregister()
 		if err != nil {
 			return fmt.Errorf("unregistering meter callback: %w", err)
 		}
 	}
 
-	p.meterCallbackRegistrations = nil
+	e.meterCallbackRegistrations = nil
 
 	return nil
 }

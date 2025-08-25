@@ -23,7 +23,10 @@ func NewEventSystemReporter(store events.Storer) *EventSystemReporter {
 	}
 }
 
-func (r *EventSystemReporter) Start(ctx context.Context, interval time.Duration) {
+func (r *EventSystemReporter) Start(
+	ctx context.Context,
+	interval time.Duration,
+) {
 	defer func() {
 		r.done <- true
 	}()
