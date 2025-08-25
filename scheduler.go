@@ -38,7 +38,7 @@ const (
 	schedulerEventStarted  schedulerEvent = "started"
 )
 
-// Scheduler provides a standard interface for scheduling work for the Processor and the Executor(s).
+// Scheduler provides a standard interface for scheduling work for the Processor and the Executor.
 //
 // The Scheduler also provides a Shutdown method to gracefully stop scheduling work.
 type Scheduler interface {
