@@ -160,12 +160,12 @@ func (s *CooperativeScheduler) Shutdown(ctx context.Context) error {
 	}
 }
 
-// ConcurrentScheduler concurrently schedules work for the Processor and the Executors.
+// ConcurrentScheduler concurrently schedules work for the Processor and the Executor.
 type ConcurrentScheduler struct {
 	*schedulerStateMachine
 
 	done      chan bool
-	executors []Executor
+	executor  Executor
 	interval  time.Duration
 	processor Processor
 	shutdown  chan struct{}
@@ -175,7 +175,7 @@ var _ Scheduler = (*ConcurrentScheduler)(nil)
 
 func NewConcurrentScheduler(
 	processor Processor,
-	executors []Executor,
+	executor Executor,
 	telemetryPrefix string,
 	interval time.Duration,
 ) (*ConcurrentScheduler, error) {
@@ -186,7 +186,7 @@ func NewConcurrentScheduler(
 
 	s := &ConcurrentScheduler{
 		done:                  make(chan bool, 1),
-		executors:             executors,
+		executor:              executor,
 		interval:              interval,
 		processor:             processor,
 		schedulerStateMachine: ssm,
@@ -210,11 +210,9 @@ func (s *ConcurrentScheduler) Start(ctx context.Context) error {
 		return fmt.Errorf("registering processor meter callbacks: %w", err)
 	}
 
-	for _, executor := range s.executors {
-		err = executor.registerMeterCallbacks()
-		if err != nil {
-			return fmt.Errorf("registering executor meter callbacks: %w", err)
-		}
+	err = s.executor.registerMeterCallbacks()
+	if err != nil {
+		return fmt.Errorf("registering executor meter callbacks: %w", err)
 	}
 
 	s.handleProcessorEvent(ctx, schedulerEventStarted)
@@ -240,26 +238,24 @@ func (s *ConcurrentScheduler) Start(ctx context.Context) error {
 		}
 	}()
 
-	for _, executor := range s.executors {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 
-			ticker := time.NewTicker(s.interval)
+		ticker := time.NewTicker(s.interval)
 
-			for {
-				select {
-				case <-ticker.C:
-					if !s.Paused() {
-						executor.executeRequests(ctx)
-					}
-
-				case <-s.shutdown:
-					return
+		for {
+			select {
+			case <-ticker.C:
+				if !s.Paused() {
+					s.executor.executeRequests(ctx)
 				}
+
+			case <-s.shutdown:
+				return
 			}
-		}()
-	}
+		}
+	}()
 
 	wg.Wait()
 
@@ -273,9 +269,7 @@ func (s *ConcurrentScheduler) Shutdown(ctx context.Context) error {
 
 	close(s.shutdown)
 	s.processor.shutdown()
-	for _, executor := range s.executors {
-		executor.shutdown()
-	}
+	s.executor.shutdown()
 
 	s.handleProcessorEvent(ctx, schedulerEventShutdown)
 
@@ -290,11 +284,9 @@ func (s *ConcurrentScheduler) Shutdown(ctx context.Context) error {
 				return fmt.Errorf("unregistering processor meter callbacks: %w", err)
 			}
 
-			for _, executor := range s.executors {
-				err = executor.unregisterMeterCallbacks()
-				if err != nil {
-					return fmt.Errorf("unregistering executor meter callbacks: %w", err)
-				}
+			err = s.executor.unregisterMeterCallbacks()
+			if err != nil {
+				return fmt.Errorf("unregistering executor meter callbacks: %w", err)
 			}
 
 			return nil

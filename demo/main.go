@@ -28,7 +28,7 @@ const (
 var concurrent bool
 
 func init() {
-	flag.BoolVar(&concurrent, "concurrent", false, "if true, uses concurrent scheduler and queue executors")
+	flag.BoolVar(&concurrent, "concurrent", false, "if true, uses concurrent scheduler")
 }
 
 func main() {
@@ -58,16 +58,14 @@ func main() {
 	db := NewDatabase()
 	store := NewStore(db)
 
-	domainQueueName := events.ExecutorQueueName("domain")
-
 	configMap := events.NewConfigMap(
 		events.WithEvent(ApplicationEventName,
 			events.WithHandler(ApplicationEventHandler()),
 			events.WithHandler(FailingEventHandler()),
 		),
 		events.WithEvent(DomainEventName,
-			events.WithHandler(DomainEventHandler(), events.WithQueue(domainQueueName)),
-			events.WithHandler(FailingEventHandler(), events.WithQueue(domainQueueName)),
+			events.WithHandler(DomainEventHandler()),
+			events.WithHandler(FailingEventHandler()),
 		),
 	)
 
@@ -83,10 +81,6 @@ func main() {
 		eventSystemReporter.Start(
 			ctx,
 			eventSystemReporterInterval,
-			[]events.ExecutorQueueName{
-				events.DefaultExecutorQueueName,
-				domainQueueName,
-			},
 		)
 	}()
 
@@ -103,42 +97,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	eventExecutor, err := events.NewDefaultExecutor(
+		store,
+		configMap,
+		nil,
+		"demo",
+		eventExecutorNumWorkers,
+		eventExecutorLimit,
+	)
+	if err != nil {
+		slog.Error("error constructing event executor", events.Err(err))
+		os.Exit(1)
+	}
+
 	var eventScheduler events.Scheduler
 	if concurrent {
-		defaultQueueExecutor, err := events.NewQueueExecutor(
-			store,
-			configMap,
-			nil,
-			"demo",
-			eventExecutorNumWorkers,
-			eventExecutorLimit,
-			events.DefaultExecutorQueueName,
-		)
-		if err != nil {
-			slog.Error("error constructing default queue event executor", events.Err(err))
-			os.Exit(1)
-		}
-
-		domainQueueExecutor, err := events.NewQueueExecutor(
-			store,
-			configMap,
-			nil,
-			"demo",
-			eventExecutorNumWorkers,
-			eventExecutorLimit,
-			domainQueueName,
-		)
-		if err != nil {
-			slog.Error("error constructing domain queue event executor", events.Err(err))
-			os.Exit(1)
-		}
-
 		eventScheduler, err = events.NewConcurrentScheduler(
 			eventProcessor,
-			[]events.Executor{
-				defaultQueueExecutor,
-				domainQueueExecutor,
-			},
+			eventExecutor,
 			"demo",
 			eventSchedulerInterval,
 		)
@@ -147,19 +123,6 @@ func main() {
 			os.Exit(1)
 		}
 	} else {
-		eventExecutor, err := events.NewDefaultExecutor(
-			store,
-			configMap,
-			nil,
-			"demo",
-			eventExecutorNumWorkers,
-			eventExecutorLimit,
-		)
-		if err != nil {
-			slog.Error("error constructing event executor", events.Err(err))
-			os.Exit(1)
-		}
-
 		eventScheduler, err = events.NewCooperativeScheduler(
 			eventProcessor,
 			eventExecutor,

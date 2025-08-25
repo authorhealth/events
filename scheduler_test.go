@@ -527,7 +527,7 @@ func TestConcurrentScheduler(t *testing.T) {
 	interval := 100 * time.Millisecond
 
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(2)
 
 	var processorCalled atomic.Bool
 	processor := NewMockProcessor(t)
@@ -540,31 +540,20 @@ func TestConcurrentScheduler(t *testing.T) {
 	processor.EXPECT().shutdown().Return()
 	processor.EXPECT().unregisterMeterCallbacks().Return(nil)
 
-	var executor1Called atomic.Bool
-	executor1 := NewMockExecutor(t)
-	executor1.EXPECT().executeRequests(context.Background()).RunAndReturn(func(_ context.Context) {
-		if executor1Called.CompareAndSwap(false, true) {
+	var executorCalled atomic.Bool
+	executor := NewMockExecutor(t)
+	executor.EXPECT().executeRequests(context.Background()).RunAndReturn(func(_ context.Context) {
+		if executorCalled.CompareAndSwap(false, true) {
 			wg.Done()
 		}
 	})
-	executor1.EXPECT().registerMeterCallbacks().Return(nil)
-	executor1.EXPECT().shutdown().Return()
-	executor1.EXPECT().unregisterMeterCallbacks().Return(nil)
-
-	var executor2Called atomic.Bool
-	executor2 := NewMockExecutor(t)
-	executor2.EXPECT().executeRequests(context.Background()).RunAndReturn(func(_ context.Context) {
-		if executor2Called.CompareAndSwap(false, true) {
-			wg.Done()
-		}
-	})
-	executor2.EXPECT().registerMeterCallbacks().Return(nil)
-	executor2.EXPECT().shutdown().Return()
-	executor2.EXPECT().unregisterMeterCallbacks().Return(nil)
+	executor.EXPECT().registerMeterCallbacks().Return(nil)
+	executor.EXPECT().shutdown().Return()
+	executor.EXPECT().unregisterMeterCallbacks().Return(nil)
 
 	scheduler, err := NewConcurrentScheduler(
 		processor,
-		[]Executor{executor1, executor2},
+		executor,
 		"",
 		interval,
 	)
@@ -593,22 +582,16 @@ func TestConcurrentScheduler_Operational_Pause_Paused_Resume_Status(t *testing.T
 	processor.EXPECT().shutdown().Return()
 	processor.EXPECT().unregisterMeterCallbacks().Return(nil)
 
-	executor1 := NewMockExecutor(t)
-	executor1.EXPECT().executeRequests(context.Background()).Return()
-	executor1.EXPECT().registerMeterCallbacks().Return(nil)
-	executor1.EXPECT().shutdown().Return()
-	executor1.EXPECT().unregisterMeterCallbacks().Return(nil)
-
-	executor2 := NewMockExecutor(t)
-	executor2.EXPECT().executeRequests(context.Background()).Return()
-	executor2.EXPECT().registerMeterCallbacks().Return(nil)
-	executor2.EXPECT().shutdown().Return()
-	executor2.EXPECT().unregisterMeterCallbacks().Return(nil)
+	executor := NewMockExecutor(t)
+	executor.EXPECT().executeRequests(context.Background()).Return()
+	executor.EXPECT().registerMeterCallbacks().Return(nil)
+	executor.EXPECT().shutdown().Return()
+	executor.EXPECT().unregisterMeterCallbacks().Return(nil)
 
 	// Act/Assert - Scheduler not started
 	scheduler, err := NewConcurrentScheduler(
 		processor,
-		[]Executor{executor1, executor2},
+		executor,
 		"",
 		interval,
 	)
@@ -675,7 +658,7 @@ func TestConcurrentScheduler_Start_already_started(t *testing.T) {
 			executor.EXPECT().executeRequests(context.Background()).Return().Maybe()
 			executor.EXPECT().registerMeterCallbacks().Return(nil).Maybe()
 
-			scheduler, err := NewConcurrentScheduler(processor, []Executor{executor}, "", interval)
+			scheduler, err := NewConcurrentScheduler(processor, executor, "", interval)
 			assert.NoError(err)
 
 			if testCase.paused {
@@ -715,7 +698,7 @@ func TestConcurrentScheduler_Shutdown_not_running(t *testing.T) {
 			processor := NewMockProcessor(t)
 			executor := NewMockExecutor(t)
 
-			scheduler, err := NewConcurrentScheduler(processor, []Executor{executor}, "", 100*time.Millisecond)
+			scheduler, err := NewConcurrentScheduler(processor, executor, "", 100*time.Millisecond)
 			assert.NoError(err)
 
 			if testCase.paused {
@@ -749,7 +732,7 @@ func TestConcurrentScheduler_Shutdown_already_shut_down(t *testing.T) {
 	executor.EXPECT().shutdown().Return()
 	executor.EXPECT().unregisterMeterCallbacks().Return(nil)
 
-	scheduler, err := NewConcurrentScheduler(processor, []Executor{executor}, "", interval)
+	scheduler, err := NewConcurrentScheduler(processor, executor, "", interval)
 	assert.NoError(err)
 
 	go func() {

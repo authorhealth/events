@@ -309,36 +309,6 @@ func (r *HandlerRequestRepository) CountDead(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-func (r *HandlerRequestRepository) CountDeadByQueue(ctx context.Context, queueName events.ExecutorQueueName) (int, error) {
-	r.db.handlerRequestTableMutex.RLock()
-	defer r.db.handlerRequestTableMutex.RUnlock()
-
-	slog.DebugContext(ctx, "counting dead handler requests")
-
-	var count int
-	for _, row := range r.db.handlerRequestTable {
-		if row.handlerRequest.QueueName != queueName {
-			continue
-		}
-
-		if row.handlerRequest.CompletedAt != nil {
-			continue
-		}
-
-		if row.handlerRequest.CanceledAt != nil {
-			continue
-		}
-
-		if row.handlerRequest.Errors < row.handlerRequest.MaxErrors {
-			continue
-		}
-
-		count++
-	}
-
-	return count, nil
-}
-
 func (r *HandlerRequestRepository) CountUnexecuted(ctx context.Context) (int, error) {
 	r.db.handlerRequestTableMutex.RLock()
 	defer r.db.handlerRequestTableMutex.RUnlock()
@@ -347,40 +317,6 @@ func (r *HandlerRequestRepository) CountUnexecuted(ctx context.Context) (int, er
 
 	var count int
 	for _, row := range r.db.handlerRequestTable {
-		if row.handlerRequest.CompletedAt != nil {
-			continue
-		}
-
-		if row.handlerRequest.CanceledAt != nil {
-			continue
-		}
-
-		if row.handlerRequest.Errors >= row.handlerRequest.MaxErrors {
-			continue
-		}
-
-		if row.handlerRequest.BackoffUntil != nil && row.handlerRequest.BackoffUntil.After(time.Now()) {
-			continue
-		}
-
-		count++
-	}
-
-	return count, nil
-}
-
-func (r *HandlerRequestRepository) CountUnexecutedByQueue(ctx context.Context, queueName events.ExecutorQueueName) (int, error) {
-	r.db.handlerRequestTableMutex.RLock()
-	defer r.db.handlerRequestTableMutex.RUnlock()
-
-	slog.DebugContext(ctx, "counting unexecuted handler requests")
-
-	var count int
-	for _, row := range r.db.handlerRequestTable {
-		if row.handlerRequest.QueueName != queueName {
-			continue
-		}
-
 		if row.handlerRequest.CompletedAt != nil {
 			continue
 		}
@@ -539,46 +475,6 @@ func (r *HandlerRequestRepository) FindOldestUnexecuted(ctx context.Context) (*e
 	return oldestUnexecutedHandlerRequest, nil
 }
 
-func (r *HandlerRequestRepository) FindOldestUnexecutedByQueue(ctx context.Context, queueName events.ExecutorQueueName) (*events.HandlerRequest, error) {
-	r.db.handlerRequestTableMutex.RLock()
-	defer r.db.handlerRequestTableMutex.RUnlock()
-
-	slog.DebugContext(ctx, "finding oldest unexecuted handler request")
-
-	var oldestUnexecutedHandlerRequest *events.HandlerRequest
-	for _, row := range r.db.handlerRequestTable {
-		if row.handlerRequest.QueueName != queueName {
-			continue
-		}
-
-		if row.handlerRequest.CompletedAt != nil {
-			continue
-		}
-
-		if row.handlerRequest.CanceledAt != nil {
-			continue
-		}
-
-		if row.handlerRequest.Errors >= row.handlerRequest.MaxErrors {
-			continue
-		}
-
-		if row.handlerRequest.BackoffUntil != nil && row.handlerRequest.BackoffUntil.After(time.Now()) {
-			continue
-		}
-
-		if oldestUnexecutedHandlerRequest == nil || row.handlerRequest.EventTimestamp.Before(oldestUnexecutedHandlerRequest.EventTimestamp) {
-			oldestUnexecutedHandlerRequest = row.handlerRequest
-		}
-	}
-
-	if oldestUnexecutedHandlerRequest == nil {
-		return nil, events.ErrNotFound
-	}
-
-	return oldestUnexecutedHandlerRequest, nil
-}
-
 func (r *HandlerRequestRepository) FindUnexecuted(ctx context.Context, limit int) ([]*events.HandlerRequest, error) {
 	r.db.handlerRequestTableMutex.RLock()
 	defer r.db.handlerRequestTableMutex.RUnlock()
@@ -601,57 +497,6 @@ func (r *HandlerRequestRepository) FindUnexecuted(ctx context.Context, limit int
 	for _, row := range sortedItems {
 		if len(unexecutedHandlerRequests) >= limit {
 			break
-		}
-
-		if row.handlerRequest.CompletedAt != nil {
-			continue
-		}
-
-		if row.handlerRequest.CanceledAt != nil {
-			continue
-		}
-
-		if row.handlerRequest.Errors >= row.handlerRequest.MaxErrors {
-			continue
-		}
-
-		if row.handlerRequest.BackoffUntil != nil && row.handlerRequest.BackoffUntil.After(time.Now()) {
-			continue
-		}
-
-		unexecutedHandlerRequests = append(unexecutedHandlerRequests, row.handlerRequest)
-	}
-
-	return unexecutedHandlerRequests, nil
-}
-
-// FindUnexecutedByQueue implements events.HandlerRequestRepository.
-func (r *HandlerRequestRepository) FindUnexecutedByQueue(ctx context.Context, queueName events.ExecutorQueueName, limit int) ([]*events.HandlerRequest, error) {
-	r.db.handlerRequestTableMutex.RLock()
-	defer r.db.handlerRequestTableMutex.RUnlock()
-
-	slog.DebugContext(ctx, "finding unexecuted handler requests", "limit", limit)
-
-	sortedItems := slices.SortedStableFunc(maps.Values(r.db.handlerRequestTable), func(a *HandlerRequestTableRow, b *HandlerRequestTableRow) int {
-		if a.handlerRequest.Priority < b.handlerRequest.Priority {
-			return -1
-		}
-
-		if a.handlerRequest.Priority > b.handlerRequest.Priority {
-			return 1
-		}
-
-		return a.handlerRequest.EventTimestamp.Compare(b.handlerRequest.EventTimestamp)
-	})
-
-	var unexecutedHandlerRequests []*events.HandlerRequest
-	for _, row := range sortedItems {
-		if len(unexecutedHandlerRequests) >= limit {
-			break
-		}
-
-		if row.handlerRequest.QueueName != queueName {
-			continue
 		}
 
 		if row.handlerRequest.CompletedAt != nil {

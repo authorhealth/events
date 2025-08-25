@@ -4,14 +4,14 @@
 
 ## Features
 
-  * **Event Definition**: Define application and domain events with associated data, entity IDs, and names.
-  * **Event Persistence**: Integrates with a `Storer` interface for event and handler request persistence, including transactional operations to ensure data consistency.
-  * **Configurable Handlers**: Map events to one or more handlers with options for custom queues, maximum error retries, and priority.
-  * **Event Processing**: A `Processor` component handles the initial processing of raw events, creating handler requests based on configured mappings.
-  * **Handler Execution**: `Executor` components manage the concurrent execution of handler requests, supporting both a default queue and custom queues. Includes configurable worker pools and an exponential backoff strategy with jitter for retries.
-  * **Flexible Scheduling**: Choose between `CooperativeScheduler` (sequential processing and execution) and `ConcurrentScheduler` (parallel processing and execution) to optimize for different workloads.
-  * **Observability**: Deep integration with OpenTelemetry for metrics and tracing, providing insights into event processing times, execution counts, and request states.
-  * **Structured Logging**: Uses `log/slog` for structured logging throughout the framework, enhancing debuggability.
+- **Event Definition**: Define application and domain events with associated data, entity IDs, and names.
+- **Event Persistence**: Integrates with a `Storer` interface for event and handler request persistence, including transactional operations to ensure data consistency.
+- **Configurable Handlers**: Map events to one or more handlers with options for maximum error retries and priority.
+- **Event Processing**: A `Processor` component handles the initial processing of raw events, creating handler requests based on configured mappings.
+- **Handler Execution**: `Executor` components manage the concurrent execution of handler requests. Includes configurable worker pools and an exponential backoff strategy with jitter for retries.
+- **Flexible Scheduling**: Choose between `CooperativeScheduler` (sequential processing and execution) and `ConcurrentScheduler` (parallel processing and execution) to optimize for different workloads.
+- **Observability**: Deep integration with OpenTelemetry for metrics and tracing, providing insights into event processing times, execution counts, and request states.
+- **Structured Logging**: Uses `log/slog` for structured logging throughout the framework, enhancing debuggability.
 
 ## Getting Started
 
@@ -69,8 +69,8 @@ configMap := events.NewConfigMap(
         events.WithHandler(FailingEventHandler()),
     ),
     events.WithEvent(DomainEventName,
-        events.WithHandler(DomainEventHandler(), events.WithQueue(domainQueueName)),
-        events.WithHandler(FailingEventHandler(), events.WithQueue(domainQueueName)),
+        events.WithHandler(DomainEventHandler()),
+        events.WithHandler(FailingEventHandler()),
     ),
 )
 ```
@@ -90,7 +90,7 @@ go eventProducer.Start(ctx, eventProducerInterval)
 eventProcessor, err := events.NewDefaultProcessor(store, configMap, nil, "demo", eventProcessorNumWorkers, eventProcessorLimit)
 // ... error handling ...
 
-// Event Executor (for CooperativeScheduler)
+// Event Executor
 eventExecutor, err := events.NewDefaultExecutor(store, configMap, nil, "demo", eventExecutorNumWorkers, eventExecutorLimit)
 // ... error handling ...
 
@@ -105,10 +105,9 @@ go eventScheduler.Start(ctx)
 
 The `HandlerConfig` provides options to customize handler behavior:
 
-  * `WithBackoffFunction(BackoffFunc)`: Customizes retry logic.
-  * `WithMaxErrors(int)`: Sets the maximum number of retries for a handler.
-  * `WithPriority(int)`: Assigns a priority to the handler request.
-  * `WithQueue(ExecutorQueueName)`: Assigns the handler to a specific executor queue.
+- `WithBackoffFunction(BackoffFunc)`: Customizes retry logic.
+- `WithMaxErrors(int)`: Sets the maximum number of retries for a handler.
+- `WithPriority(int)`: Assigns a priority to the handler request.
 
 Defaults for `MaxErrors` is 5, `Priority` is 50.
 
@@ -116,9 +115,9 @@ Defaults for `MaxErrors` is 5, `Priority` is 50.
 
 The framework leverages OpenTelemetry for comprehensive observability:
 
-  * **Metrics**: Custom metrics are emitted for event processing successes/failures, processing times, request execution times, and counts of unprocessed, unexecuted, and dead requests.
-  * **Tracing**: Spans are automatically created and linked for event processing and handler execution, allowing end-to-end tracing of event flow through the system.
-  * **Logging**: Structured logging using `log/slog` provides detailed operational insights.
+- **Metrics**: Custom metrics are emitted for event processing successes/failures, processing times, request execution times, and counts of unprocessed, unexecuted, and dead requests.
+- **Tracing**: Spans are automatically created and linked for event processing and handler execution, allowing end-to-end tracing of event flow through the system.
+- **Logging**: Structured logging using `log/slog` provides detailed operational insights.
 
 ## Testing
 

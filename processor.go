@@ -274,7 +274,6 @@ func (p *DefaultProcessor) processEvent(ctx context.Context, event *Event) {
 				handlerName,
 				handlerConfig.MaxErrors,
 				handlerConfig.Priority,
-				handlerConfig.QueueName,
 			)
 
 			if err != nil {
