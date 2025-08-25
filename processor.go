@@ -180,7 +180,7 @@ func (p *DefaultProcessor) processEvents(ctx context.Context) {
 
 	var wg sync.WaitGroup
 	defer wg.Wait()
-	workers := make(chan bool, p.numProcessorWorkers)
+	workers := make(chan struct{}, p.numProcessorWorkers)
 
 	for _, event := range events {
 		select {
@@ -188,7 +188,7 @@ func (p *DefaultProcessor) processEvents(ctx context.Context) {
 			return
 
 		default:
-			workers <- true
+			workers <- struct{}{}
 
 			event := event
 			wg.Add(1)
