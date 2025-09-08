@@ -11,7 +11,7 @@ import (
 	mock "github.com/stretchr/testify/mock"
 )
 
-func TestExecutor_executeRequests(t *testing.T) {
+func TestDefaultExecutor_executeRequests(t *testing.T) {
 	assert := assert.New(t)
 
 	limit := 5
@@ -72,13 +72,13 @@ func TestExecutor_executeRequests(t *testing.T) {
 		WithEvent(barUpdatedEventName, WithHandler(barUpdatedHandler)),
 	)
 
-	e, err := NewExecutor(store, eventMap, nil, "", 2)
+	e, err := NewDefaultExecutor(store, eventMap, nil, "", 2, limit)
 	assert.NoError(err)
 
-	e.executeRequests(context.Background(), limit)
+	e.executeRequests(context.Background())
 }
 
-func TestExecutor_executeRequests_not_found(t *testing.T) {
+func TestDefaultExecutor_executeRequests_not_found(t *testing.T) {
 	assert := assert.New(t)
 
 	limit := 5
@@ -123,13 +123,13 @@ func TestExecutor_executeRequests_not_found(t *testing.T) {
 		WithEvent(fooUpdatedEventName, WithHandler(fooUpdatedHandler)),
 	)
 
-	e, err := NewExecutor(store, eventMap, nil, "", 2)
+	e, err := NewDefaultExecutor(store, eventMap, nil, "", 2, limit)
 	assert.NoError(err)
 
-	e.executeRequests(context.Background(), limit)
+	e.executeRequests(context.Background())
 }
 
-func TestExecutor_executeRequests_already_executed(t *testing.T) {
+func TestDefaultExecutor_executeRequests_already_executed(t *testing.T) {
 	assert := assert.New(t)
 
 	limit := 5
@@ -176,13 +176,13 @@ func TestExecutor_executeRequests_already_executed(t *testing.T) {
 		WithEvent(fooUpdatedEventName, WithHandler(fooUpdatedHandler)),
 	)
 
-	e, err := NewExecutor(store, eventMap, nil, "", 2)
+	e, err := NewDefaultExecutor(store, eventMap, nil, "", 2, limit)
 	assert.NoError(err)
 
-	e.executeRequests(context.Background(), limit)
+	e.executeRequests(context.Background())
 }
 
-func TestExecutor_executeRequests_no_configured_handler(t *testing.T) {
+func TestDefaultExecutor_executeRequests_no_configured_handler(t *testing.T) {
 	assert := assert.New(t)
 
 	limit := 5
@@ -225,8 +225,8 @@ func TestExecutor_executeRequests_no_configured_handler(t *testing.T) {
 
 	eventMap := NewConfigMap()
 
-	e, err := NewExecutor(store, eventMap, nil, "", 2)
+	e, err := NewDefaultExecutor(store, eventMap, nil, "", 2, limit)
 	assert.NoError(err)
 
-	e.executeRequests(context.Background(), limit)
+	e.executeRequests(context.Background())
 }
