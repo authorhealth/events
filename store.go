@@ -28,13 +28,17 @@ type EventRepository interface {
 
 type HandlerRequestRepository interface {
 	CountDead(ctx context.Context) (int, error)
+	CountDeadByQueue(ctx context.Context, queueName ExecutorQueueName) (int, error)
 	CountUnexecuted(ctx context.Context) (int, error)
+	CountUnexecutedByQueue(ctx context.Context, queueName ExecutorQueueName) (int, error)
 	Create(ctx context.Context, handlerRequest *HandlerRequest) error
 	Find(ctx context.Context) iter.Seq2[*HandlerRequest, error]
 	FindByID(ctx context.Context, id string) (*HandlerRequest, error)
 	FindByIDForUpdate(ctx context.Context, id string, skipLocked bool) (*HandlerRequest, error)
 	FindDead(ctx context.Context, limit int, offset int) ([]*HandlerRequest, error)
 	FindOldestUnexecuted(ctx context.Context) (*HandlerRequest, error)
+	FindOldestUnexecutedByQueue(ctx context.Context, queueName ExecutorQueueName) (*HandlerRequest, error)
 	FindUnexecuted(ctx context.Context, limit int) ([]*HandlerRequest, error)
+	FindUnexecutedByQueue(ctx context.Context, queueName ExecutorQueueName, limit int) ([]*HandlerRequest, error)
 	Update(ctx context.Context, handlerRequest *HandlerRequest) error
 }
