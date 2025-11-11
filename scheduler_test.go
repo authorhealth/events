@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 	mock "github.com/stretchr/testify/mock"
 )
 
-func TestScheduler(t *testing.T) {
+func TestCooperativeScheduler(t *testing.T) {
 	assert := assert.New(t)
 
 	interval := 100 * time.Millisecond
@@ -137,17 +138,17 @@ func TestScheduler(t *testing.T) {
 		WithEvent(barUpdatedEventName, WithHandler(barUpdatedHandler)),
 	)
 
-	processor, err := NewProcessor(store, eventMap, nil, "", 2)
+	processor, err := NewDefaultProcessor(store, eventMap, nil, "", 2, limit)
 	assert.NoError(err)
 
-	executor, err := NewExecutor(store, eventMap, nil, "", 2)
+	executor, err := NewDefaultExecutor(store, eventMap, nil, "", 2, limit)
 	assert.NoError(err)
 
-	scheduler, err := NewScheduler(processor, executor, "")
+	scheduler, err := NewCooperativeScheduler(processor, executor, "", interval)
 	assert.NoError(err)
 
 	go func() {
-		err := scheduler.Start(context.Background(), interval, limit, limit)
+		err := scheduler.Start(context.Background())
 		assert.NoError(err)
 	}()
 
@@ -157,7 +158,7 @@ func TestScheduler(t *testing.T) {
 	assert.NoError(err)
 }
 
-func TestScheduler_Operational_Pause_Paused_Resume_Status(t *testing.T) {
+func TestCooperativeScheduler_Operational_Pause_Paused_Resume_Status(t *testing.T) {
 	testCases := map[string]struct {
 		pauseAfterProcessing bool
 	}{
@@ -215,14 +216,14 @@ func TestScheduler_Operational_Pause_Paused_Resume_Status(t *testing.T) {
 			store.EXPECT().Events().Return(eventRepo)
 			store.EXPECT().HandlerRequests().Return(handlerRequestRepo)
 
-			processor, err := NewProcessor(store, eventMap, nil, "", 2)
+			processor, err := NewDefaultProcessor(store, eventMap, nil, "", 2, limit)
 			assert.NoError(err)
 
-			executor, err := NewExecutor(store, eventMap, nil, "", 2)
+			executor, err := NewDefaultExecutor(store, eventMap, nil, "", 2, limit)
 			assert.NoError(err)
 
 			// Act/Assert - Scheduler not started
-			scheduler, err := NewScheduler(processor, executor, "")
+			scheduler, err := NewCooperativeScheduler(processor, executor, "", interval)
 
 			assert.NoError(err)
 			assert.False(scheduler.Operational())
@@ -231,7 +232,7 @@ func TestScheduler_Operational_Pause_Paused_Resume_Status(t *testing.T) {
 
 			// Act/Assert - Scheduler running - no events or handler requests available
 			go func() {
-				err := scheduler.Start(context.Background(), interval, limit, limit)
+				err := scheduler.Start(context.Background())
 				assert.NoError(err)
 			}()
 
@@ -383,7 +384,7 @@ func TestScheduler_Operational_Pause_Paused_Resume_Status(t *testing.T) {
 	}
 }
 
-func TestScheduler_Start_already_started(t *testing.T) {
+func TestCooperativeScheduler_Start_already_started(t *testing.T) {
 	testCases := map[string]struct {
 		paused bool
 	}{
@@ -410,13 +411,13 @@ func TestScheduler_Start_already_started(t *testing.T) {
 			store.EXPECT().Events().Return(eventRepo).Maybe()
 			store.EXPECT().HandlerRequests().Return(handlerRequestRepo).Maybe()
 
-			processor, err := NewProcessor(store, nil, nil, "", 2)
+			processor, err := NewDefaultProcessor(store, nil, nil, "", 2, limit)
 			assert.NoError(err)
 
-			executor, err := NewExecutor(store, nil, nil, "", 2)
+			executor, err := NewDefaultExecutor(store, nil, nil, "", 2, limit)
 			assert.NoError(err)
 
-			scheduler, err := NewScheduler(processor, executor, "")
+			scheduler, err := NewCooperativeScheduler(processor, executor, "", interval)
 			assert.NoError(err)
 
 			if testCase.paused {
@@ -424,14 +425,14 @@ func TestScheduler_Start_already_started(t *testing.T) {
 			}
 
 			go func() {
-				err := scheduler.Start(context.Background(), interval, limit, limit)
+				err := scheduler.Start(context.Background())
 				assert.NoError(err)
 			}()
 
 			time.Sleep(10 * time.Millisecond) // Sleep for a couple of ms to ensure that the scheduler has started.
 
 			// Act
-			err = scheduler.Start(context.Background(), interval, limit, limit)
+			err = scheduler.Start(context.Background())
 
 			// Assert
 			assert.EqualError(err, "scheduler is already started")
@@ -439,7 +440,7 @@ func TestScheduler_Start_already_started(t *testing.T) {
 	}
 }
 
-func TestScheduler_Shutdown_not_running(t *testing.T) {
+func TestCooperativeScheduler_Shutdown_not_running(t *testing.T) {
 	testCases := map[string]struct {
 		paused bool
 	}{
@@ -455,13 +456,13 @@ func TestScheduler_Shutdown_not_running(t *testing.T) {
 			// Arrange
 			store := NewMockStorer(t)
 
-			processor, err := NewProcessor(store, nil, nil, "", 2)
+			processor, err := NewDefaultProcessor(store, nil, nil, "", 2, 5)
 			assert.NoError(err)
 
-			executor, err := NewExecutor(store, nil, nil, "", 2)
+			executor, err := NewDefaultExecutor(store, nil, nil, "", 2, 5)
 			assert.NoError(err)
 
-			scheduler, err := NewScheduler(processor, executor, "")
+			scheduler, err := NewCooperativeScheduler(processor, executor, "", 100*time.Millisecond)
 			assert.NoError(err)
 
 			if testCase.paused {
@@ -477,7 +478,7 @@ func TestScheduler_Shutdown_not_running(t *testing.T) {
 	}
 }
 
-func TestScheduler_Shutdown_already_shut_down(t *testing.T) {
+func TestCooperativeScheduler_Shutdown_already_shut_down(t *testing.T) {
 	assert := assert.New(t)
 
 	// Arrange
@@ -494,17 +495,248 @@ func TestScheduler_Shutdown_already_shut_down(t *testing.T) {
 	store.EXPECT().Events().Return(eventRepo).Maybe()
 	store.EXPECT().HandlerRequests().Return(handlerRequestRepo).Maybe()
 
-	processor, err := NewProcessor(store, nil, nil, "", 2)
+	processor, err := NewDefaultProcessor(store, nil, nil, "", 2, limit)
 	assert.NoError(err)
 
-	executor, err := NewExecutor(store, nil, nil, "", 2)
+	executor, err := NewDefaultExecutor(store, nil, nil, "", 2, limit)
 	assert.NoError(err)
 
-	scheduler, err := NewScheduler(processor, executor, "")
+	scheduler, err := NewCooperativeScheduler(processor, executor, "", interval)
 	assert.NoError(err)
 
 	go func() {
-		err := scheduler.Start(context.Background(), interval, limit, limit)
+		err := scheduler.Start(context.Background())
+		assert.NoError(err)
+	}()
+
+	time.Sleep(10 * time.Millisecond) // Sleep for a couple of ms to ensure that the scheduler has started.
+
+	err = scheduler.Shutdown(context.Background())
+	assert.NoError(err)
+
+	// Act
+	err = scheduler.Shutdown(context.Background())
+
+	// Assert
+	assert.EqualError(err, "scheduler is not operational")
+}
+
+func TestConcurrentScheduler(t *testing.T) {
+	assert := assert.New(t)
+
+	interval := 100 * time.Millisecond
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	var processorCalled atomic.Bool
+	processor := NewMockProcessor(t)
+	processor.EXPECT().processEvents(context.Background()).RunAndReturn(func(_ context.Context) {
+		if processorCalled.CompareAndSwap(false, true) {
+			wg.Done()
+		}
+	})
+	processor.EXPECT().registerMeterCallbacks().Return(nil)
+	processor.EXPECT().shutdown().Return()
+	processor.EXPECT().unregisterMeterCallbacks().Return(nil)
+
+	var executorCalled atomic.Bool
+	executor := NewMockExecutor(t)
+	executor.EXPECT().executeRequests(context.Background()).RunAndReturn(func(_ context.Context) {
+		if executorCalled.CompareAndSwap(false, true) {
+			wg.Done()
+		}
+	})
+	executor.EXPECT().registerMeterCallbacks().Return(nil)
+	executor.EXPECT().shutdown().Return()
+	executor.EXPECT().unregisterMeterCallbacks().Return(nil)
+
+	scheduler, err := NewConcurrentScheduler(
+		processor,
+		executor,
+		"",
+		interval,
+	)
+	assert.NoError(err)
+
+	go func() {
+		err := scheduler.Start(context.Background())
+		assert.NoError(err)
+	}()
+
+	wg.Wait()
+
+	err = scheduler.Shutdown(context.Background())
+	assert.NoError(err)
+}
+
+func TestConcurrentScheduler_Operational_Pause_Paused_Resume_Status(t *testing.T) {
+	assert := assert.New(t)
+
+	// Arrange - Scheduler not started
+	interval := 100 * time.Millisecond
+
+	processor := NewMockProcessor(t)
+	processor.EXPECT().processEvents(context.Background()).Return()
+	processor.EXPECT().registerMeterCallbacks().Return(nil)
+	processor.EXPECT().shutdown().Return()
+	processor.EXPECT().unregisterMeterCallbacks().Return(nil)
+
+	executor := NewMockExecutor(t)
+	executor.EXPECT().executeRequests(context.Background()).Return()
+	executor.EXPECT().registerMeterCallbacks().Return(nil)
+	executor.EXPECT().shutdown().Return()
+	executor.EXPECT().unregisterMeterCallbacks().Return(nil)
+
+	// Act/Assert - Scheduler not started
+	scheduler, err := NewConcurrentScheduler(
+		processor,
+		executor,
+		"",
+		interval,
+	)
+
+	assert.NoError(err)
+	assert.False(scheduler.Operational())
+	assert.False(scheduler.Paused())
+	assert.Equal(SchedulerStatusNotStarted, scheduler.Status())
+
+	// Act/Assert - Scheduler running
+	go func() {
+		err := scheduler.Start(context.Background())
+		assert.NoError(err)
+	}()
+
+	time.Sleep(3 * interval) // Sleep for a couple of ticks to ensure the scheduler has had time to run.
+
+	assert.False(scheduler.Paused())
+	assert.True(scheduler.Operational())
+	assert.Equal(SchedulerStatusRunning, scheduler.Status())
+
+	// Act/Assert - Scheduler paused
+	scheduler.Pause(context.Background())
+	assert.True(scheduler.Operational())
+	assert.True(scheduler.Paused())
+	assert.Equal(SchedulerStatusPaused, scheduler.Status())
+
+	// Act/Assert - Scheduler resumed
+	scheduler.Resume(context.Background())
+	assert.True(scheduler.Operational())
+	assert.False(scheduler.Paused())
+	assert.Equal(SchedulerStatusRunning, scheduler.Status())
+
+	// Act/Assert - Scheduler shut down
+	err = scheduler.Shutdown(context.Background())
+	assert.NoError(err)
+
+	assert.False(scheduler.Operational())
+	assert.False(scheduler.Paused())
+	assert.Equal(SchedulerStatusShutdown, scheduler.Status())
+}
+
+func TestConcurrentScheduler_Start_already_started(t *testing.T) {
+	testCases := map[string]struct {
+		paused bool
+	}{
+		"not paused": {},
+		"paused": {
+			paused: true,
+		},
+	}
+	for name, testCase := range testCases {
+		t.Run(name, func(t *testing.T) {
+			assert := assert.New(t)
+
+			// Arrange
+			interval := 100 * time.Millisecond
+
+			processor := NewMockProcessor(t)
+			processor.EXPECT().processEvents(context.Background()).Return().Maybe()
+			processor.EXPECT().registerMeterCallbacks().Return(nil).Maybe()
+
+			executor := NewMockExecutor(t)
+			executor.EXPECT().executeRequests(context.Background()).Return().Maybe()
+			executor.EXPECT().registerMeterCallbacks().Return(nil).Maybe()
+
+			scheduler, err := NewConcurrentScheduler(processor, executor, "", interval)
+			assert.NoError(err)
+
+			if testCase.paused {
+				scheduler.Pause(context.Background())
+			}
+
+			go func() {
+				err := scheduler.Start(context.Background())
+				assert.NoError(err)
+			}()
+
+			time.Sleep(10 * time.Millisecond) // Sleep for a couple of ms to ensure that the scheduler has started.
+
+			// Act
+			err = scheduler.Start(context.Background())
+
+			// Assert
+			assert.EqualError(err, "scheduler is already started")
+		})
+	}
+}
+
+func TestConcurrentScheduler_Shutdown_not_running(t *testing.T) {
+	testCases := map[string]struct {
+		paused bool
+	}{
+		"not paused": {},
+		"paused": {
+			paused: true,
+		},
+	}
+	for name, testCase := range testCases {
+		t.Run(name, func(t *testing.T) {
+			assert := assert.New(t)
+
+			// Arrange
+			processor := NewMockProcessor(t)
+			executor := NewMockExecutor(t)
+
+			scheduler, err := NewConcurrentScheduler(processor, executor, "", 100*time.Millisecond)
+			assert.NoError(err)
+
+			if testCase.paused {
+				scheduler.Pause(context.Background())
+			}
+
+			// Act
+			err = scheduler.Shutdown(context.Background())
+
+			// Assert
+			assert.EqualError(err, "scheduler is not operational")
+		})
+	}
+}
+
+func TestConcurrentScheduler_Shutdown_already_shut_down(t *testing.T) {
+	assert := assert.New(t)
+
+	// Arrange
+	interval := 100 * time.Millisecond
+
+	processor := NewMockProcessor(t)
+	processor.EXPECT().processEvents(context.Background()).Return().Maybe()
+	processor.EXPECT().registerMeterCallbacks().Return(nil).Maybe()
+	processor.EXPECT().shutdown().Return()
+	processor.EXPECT().unregisterMeterCallbacks().Return(nil)
+
+	executor := NewMockExecutor(t)
+	executor.EXPECT().executeRequests(context.Background()).Return().Maybe()
+	executor.EXPECT().registerMeterCallbacks().Return(nil).Maybe()
+	executor.EXPECT().shutdown().Return()
+	executor.EXPECT().unregisterMeterCallbacks().Return(nil)
+
+	scheduler, err := NewConcurrentScheduler(processor, executor, "", interval)
+	assert.NoError(err)
+
+	go func() {
+		err := scheduler.Start(context.Background())
 		assert.NoError(err)
 	}()
 
