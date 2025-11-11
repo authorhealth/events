@@ -10,7 +10,7 @@ import (
 	mock "github.com/stretchr/testify/mock"
 )
 
-func TestProcessor_processEvents(t *testing.T) {
+func TestDefaultProcessor_processEvents(t *testing.T) {
 	assert := assert.New(t)
 
 	limit := 5
@@ -75,13 +75,13 @@ func TestProcessor_processEvents(t *testing.T) {
 		WithEvent(barUpdatedEventName, WithHandler(barUpdatedHandler)),
 	)
 
-	p, err := NewProcessor(store, eventMap, nil, "", 2)
+	p, err := NewDefaultProcessor(store, eventMap, nil, "", 2, limit)
 	assert.NoError(err)
 
-	p.processEvents(context.Background(), limit)
+	p.processEvents(context.Background())
 }
 
-func TestProcessor_processEvents_not_found(t *testing.T) {
+func TestDefaultProcessor_processEvents_not_found(t *testing.T) {
 	assert := assert.New(t)
 
 	limit := 5
@@ -123,13 +123,13 @@ func TestProcessor_processEvents_not_found(t *testing.T) {
 		WithEvent(fooUpdatedEventName, WithHandler(fooUpdatedHandler)),
 	)
 
-	p, err := NewProcessor(store, eventMap, nil, "", 2)
+	p, err := NewDefaultProcessor(store, eventMap, nil, "", 2, limit)
 	assert.NoError(err)
 
-	p.processEvents(context.Background(), limit)
+	p.processEvents(context.Background())
 }
 
-func TestProcessor_processEvents_already_processed(t *testing.T) {
+func TestDefaultProcessor_processEvents_already_processed(t *testing.T) {
 	assert := assert.New(t)
 
 	limit := 5
@@ -172,13 +172,13 @@ func TestProcessor_processEvents_already_processed(t *testing.T) {
 		WithEvent(fooUpdatedEventName, WithHandler(fooUpdatedHandler)),
 	)
 
-	p, err := NewProcessor(store, eventMap, nil, "", 2)
+	p, err := NewDefaultProcessor(store, eventMap, nil, "", 2, limit)
 	assert.NoError(err)
 
-	p.processEvents(context.Background(), limit)
+	p.processEvents(context.Background())
 }
 
-func TestProcessor_processEvents_no_handler(t *testing.T) {
+func TestDefaultProcessor_processEvents_no_handler(t *testing.T) {
 	assert := assert.New(t)
 
 	limit := 5
@@ -215,8 +215,8 @@ func TestProcessor_processEvents_no_handler(t *testing.T) {
 
 	eventMap := ConfigMap{}
 
-	p, err := NewProcessor(store, eventMap, nil, "", 2)
+	p, err := NewDefaultProcessor(store, eventMap, nil, "", 2, limit)
 	assert.NoError(err)
 
-	p.processEvents(context.Background(), limit)
+	p.processEvents(context.Background())
 }

@@ -38,58 +38,60 @@ const (
 	schedulerEventStarted  schedulerEvent = "started"
 )
 
-// Scheduler cooperatively schedules work for the Processor and the Executor.
-//
-// The Scheduler starts by calling the Processor to process events and create handler execution requests.
-// Then, the Scheduler calls the Executor to execute handler execution requests.
-// This quick succession helps minimize the gap between processing and execution.
+// Scheduler provides a standard interface for scheduling work for the Processor and the Executor.
 //
 // The Scheduler also provides a Shutdown method to gracefully stop scheduling work.
-type Scheduler struct {
-	done                chan bool
-	executor            *Executor
-	meter               metric.Meter
-	processor           *Processor
-	shutdown            chan bool
-	status              SchedulerStatus
-	statusRWMutex       sync.RWMutex
-	statusUpDownCounter metric.Int64UpDownCounter
-	telemetryPrefix     string
+type Scheduler interface {
+	Start(ctx context.Context) error
+	Shutdown(ctx context.Context) error
+	Operational() bool
+	Pause(ctx context.Context)
+	Paused() bool
+	Resume(ctx context.Context)
+	Status() SchedulerStatus
 }
 
-func NewScheduler(
-	processor *Processor,
-	executor *Executor,
+// CooperativeScheduler cooperatively schedules work for the Processor and the Executor.
+//
+// The CooperativeScheduler starts by calling the Processor to process events and create handler execution requests.
+// Then, the CooperativeScheduler calls the Executor to execute handler execution requests.
+// This quick succession helps minimize the gap between processing and execution.
+type CooperativeScheduler struct {
+	*schedulerStateMachine
+
+	done      chan bool
+	executor  Executor
+	interval  time.Duration
+	processor Processor
+	shutdown  chan bool
+}
+
+var _ Scheduler = (*CooperativeScheduler)(nil)
+
+func NewCooperativeScheduler(
+	processor Processor,
+	executor Executor,
 	telemetryPrefix string,
-) (*Scheduler, error) {
-	s := &Scheduler{
-		done:            make(chan bool, 1),
-		meter:           otel.GetMeterProvider().Meter("github.com/authorhealth/events/v2"),
-		executor:        executor,
-		processor:       processor,
-		shutdown:        make(chan bool, 1),
-		status:          SchedulerStatusNotStarted,
-		telemetryPrefix: telemetryPrefix,
+	interval time.Duration,
+) (*CooperativeScheduler, error) {
+	ssm, err := newSchedulerStateMachine(telemetryPrefix)
+	if err != nil {
+		return nil, err
 	}
 
-	var err error
-	s.statusUpDownCounter, err = s.meter.Int64UpDownCounter(
-		s.applyTelemetryPrefix("events.scheduler.status"),
-		metric.WithDescription("Operational status for the scheduler: 1 (true) or 0 (false) for each of the possible states"),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("constructing scheduler status up/down counter: %w", err)
+	s := &CooperativeScheduler{
+		done:                  make(chan bool, 1),
+		executor:              executor,
+		interval:              interval,
+		processor:             processor,
+		schedulerStateMachine: ssm,
+		shutdown:              make(chan bool, 1),
 	}
 
 	return s, nil
 }
 
-func (s *Scheduler) Start(
-	ctx context.Context,
-	interval time.Duration,
-	processorLimit int,
-	executorLimit int,
-) error {
+func (s *CooperativeScheduler) Start(ctx context.Context) error {
 	if s.Status() != SchedulerStatusNotStarted {
 		return errors.New("scheduler is already started")
 	}
@@ -110,14 +112,14 @@ func (s *Scheduler) Start(
 
 	s.handleProcessorEvent(ctx, schedulerEventStarted)
 
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(s.interval)
 
 	for {
 		select {
 		case <-ticker.C:
 			if !s.Paused() {
-				s.processor.processEvents(ctx, processorLimit)
-				s.executor.executeRequests(ctx, executorLimit)
+				s.processor.processEvents(ctx)
+				s.executor.executeRequests(ctx)
 			}
 
 		case <-s.shutdown:
@@ -126,14 +128,14 @@ func (s *Scheduler) Start(
 	}
 }
 
-func (s *Scheduler) Shutdown(ctx context.Context) error {
+func (s *CooperativeScheduler) Shutdown(ctx context.Context) error {
 	if !s.Status().operational() {
 		return errors.New("scheduler is not operational")
 	}
 
 	s.shutdown <- true
-	s.processor.shutdown <- true
-	s.executor.shutdown <- true
+	s.processor.shutdown()
+	s.executor.shutdown()
 
 	s.handleProcessorEvent(ctx, schedulerEventShutdown)
 
@@ -158,36 +160,199 @@ func (s *Scheduler) Shutdown(ctx context.Context) error {
 	}
 }
 
-func (s *Scheduler) Operational() bool {
-	return s.Status().operational()
+// ConcurrentScheduler concurrently schedules work for the Processor and the Executor.
+type ConcurrentScheduler struct {
+	*schedulerStateMachine
+
+	done      chan bool
+	executor  Executor
+	interval  time.Duration
+	processor Processor
+	shutdown  chan struct{}
 }
 
-func (s *Scheduler) Pause(ctx context.Context) {
-	s.handleProcessorEvent(ctx, schedulerEventPaused)
+var _ Scheduler = (*ConcurrentScheduler)(nil)
+
+func NewConcurrentScheduler(
+	processor Processor,
+	executor Executor,
+	telemetryPrefix string,
+	interval time.Duration,
+) (*ConcurrentScheduler, error) {
+	ssm, err := newSchedulerStateMachine(telemetryPrefix)
+	if err != nil {
+		return nil, err
+	}
+
+	s := &ConcurrentScheduler{
+		done:                  make(chan bool, 1),
+		executor:              executor,
+		interval:              interval,
+		processor:             processor,
+		schedulerStateMachine: ssm,
+		shutdown:              make(chan struct{}),
+	}
+
+	return s, nil
 }
 
-func (s *Scheduler) Paused() bool {
-	return s.Status() == SchedulerStatusPaused
+func (s *ConcurrentScheduler) Start(ctx context.Context) error {
+	if s.Status() != SchedulerStatusNotStarted {
+		return errors.New("scheduler is already started")
+	}
+
+	defer func() {
+		s.done <- true
+	}()
+
+	err := s.processor.registerMeterCallbacks()
+	if err != nil {
+		return fmt.Errorf("registering processor meter callbacks: %w", err)
+	}
+
+	err = s.executor.registerMeterCallbacks()
+	if err != nil {
+		return fmt.Errorf("registering executor meter callbacks: %w", err)
+	}
+
+	s.handleProcessorEvent(ctx, schedulerEventStarted)
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		ticker := time.NewTicker(s.interval)
+
+		for {
+			select {
+			case <-ticker.C:
+				if !s.Paused() {
+					s.processor.processEvents(ctx)
+				}
+
+			case <-s.shutdown:
+				return
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		ticker := time.NewTicker(s.interval)
+
+		for {
+			select {
+			case <-ticker.C:
+				if !s.Paused() {
+					s.executor.executeRequests(ctx)
+				}
+
+			case <-s.shutdown:
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	return nil
 }
 
-func (s *Scheduler) Resume(ctx context.Context) {
-	s.handleProcessorEvent(ctx, schedulerEventResumed)
+func (s *ConcurrentScheduler) Shutdown(ctx context.Context) error {
+	if !s.Status().operational() {
+		return errors.New("scheduler is not operational")
+	}
+
+	close(s.shutdown)
+	s.processor.shutdown()
+	s.executor.shutdown()
+
+	s.handleProcessorEvent(ctx, schedulerEventShutdown)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+
+		case <-s.done:
+			err := s.processor.unregisterMeterCallbacks()
+			if err != nil {
+				return fmt.Errorf("unregistering processor meter callbacks: %w", err)
+			}
+
+			err = s.executor.unregisterMeterCallbacks()
+			if err != nil {
+				return fmt.Errorf("unregistering executor meter callbacks: %w", err)
+			}
+
+			return nil
+		}
+	}
 }
 
-func (s *Scheduler) Status() SchedulerStatus {
-	s.statusRWMutex.RLock()
-	defer s.statusRWMutex.RUnlock()
-
-	return s.status
+type schedulerStateMachine struct {
+	meter               metric.Meter
+	status              SchedulerStatus
+	statusRWMutex       sync.RWMutex
+	statusUpDownCounter metric.Int64UpDownCounter
+	telemetryPrefix     string
 }
 
-func (s *Scheduler) handleProcessorEvent(ctx context.Context, event schedulerEvent) {
-	s.statusRWMutex.Lock()
-	defer s.statusRWMutex.Unlock()
+func newSchedulerStateMachine(
+	telemetryPrefix string,
+) (*schedulerStateMachine, error) {
+	ssm := &schedulerStateMachine{
+		meter:           otel.GetMeterProvider().Meter("github.com/authorhealth/events/v2"),
+		status:          SchedulerStatusNotStarted,
+		telemetryPrefix: telemetryPrefix,
+	}
 
-	nextStatus := s.status
+	var err error
+	ssm.statusUpDownCounter, err = ssm.meter.Int64UpDownCounter(
+		ssm.applyTelemetryPrefix("events.scheduler.status"),
+		metric.WithDescription("Operational status for the scheduler: 1 (true) or 0 (false) for each of the possible states"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("constructing scheduler status up/down counter: %w", err)
+	}
 
-	switch s.status {
+	return ssm, nil
+}
+
+func (ssm *schedulerStateMachine) Operational() bool {
+	return ssm.Status().operational()
+}
+
+func (ssm *schedulerStateMachine) Pause(ctx context.Context) {
+	ssm.handleProcessorEvent(ctx, schedulerEventPaused)
+}
+
+func (ssm *schedulerStateMachine) Paused() bool {
+	return ssm.Status() == SchedulerStatusPaused
+}
+
+func (ssm *schedulerStateMachine) Resume(ctx context.Context) {
+	ssm.handleProcessorEvent(ctx, schedulerEventResumed)
+}
+
+func (ssm *schedulerStateMachine) Status() SchedulerStatus {
+	ssm.statusRWMutex.RLock()
+	defer ssm.statusRWMutex.RUnlock()
+
+	return ssm.status
+}
+
+func (ssm *schedulerStateMachine) handleProcessorEvent(ctx context.Context, event schedulerEvent) {
+	ssm.statusRWMutex.Lock()
+	defer ssm.statusRWMutex.Unlock()
+
+	nextStatus := ssm.status
+
+	switch ssm.status {
 	case SchedulerStatusNotStarted:
 		switch event {
 		case schedulerEventStarted:
@@ -213,22 +378,22 @@ func (s *Scheduler) handleProcessorEvent(ctx context.Context, event schedulerEve
 		}
 	}
 
-	if nextStatus == s.status {
+	if nextStatus == ssm.status {
 		return
 	}
 
-	previousStatus := s.status
-	s.status = nextStatus
+	previousStatus := ssm.status
+	ssm.status = nextStatus
 
 	// Keep track of the number of operational schedulers and their state (i.e., running or paused).
 	if previousStatus.operational() {
-		s.statusUpDownCounter.Add(
+		ssm.statusUpDownCounter.Add(
 			ctx,
 			-1,
 			metric.WithAttributeSet(
 				attribute.NewSet(
 					attribute.String(
-						s.applyTelemetryPrefix("events.scheduler.state"),
+						ssm.applyTelemetryPrefix("events.scheduler.state"),
 						previousStatus.String(),
 					),
 				),
@@ -236,15 +401,15 @@ func (s *Scheduler) handleProcessorEvent(ctx context.Context, event schedulerEve
 		)
 	}
 
-	if s.status.operational() {
-		s.statusUpDownCounter.Add(
+	if ssm.status.operational() {
+		ssm.statusUpDownCounter.Add(
 			ctx,
 			1,
 			metric.WithAttributeSet(
 				attribute.NewSet(
 					attribute.String(
-						s.applyTelemetryPrefix("events.scheduler.state"),
-						s.status.String(),
+						ssm.applyTelemetryPrefix("events.scheduler.state"),
+						ssm.status.String(),
 					),
 				),
 			),
@@ -252,9 +417,9 @@ func (s *Scheduler) handleProcessorEvent(ctx context.Context, event schedulerEve
 	}
 }
 
-func (s *Scheduler) applyTelemetryPrefix(k string) string {
-	if len(s.telemetryPrefix) > 0 {
-		return fmt.Sprintf("%s.%s", s.telemetryPrefix, k)
+func (ssm *schedulerStateMachine) applyTelemetryPrefix(k string) string {
+	if len(ssm.telemetryPrefix) > 0 {
+		return fmt.Sprintf("%s.%s", ssm.telemetryPrefix, k)
 	}
 
 	return k
