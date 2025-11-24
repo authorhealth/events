@@ -262,8 +262,6 @@ func (e *DefaultExecutor) executeRequest(ctx context.Context, request *HandlerRe
 		"requestHandlerName", request.HandlerName.String(),
 	)
 
-	logger.DebugContext(ctx, fmt.Sprintf("executing %s request", request.HandlerName))
-
 	ctx, request, err := e.beforeExecute(ctx, request)
 	if err != nil {
 		logger.ErrorContext(ctx, "error running before execute", Err(err))
@@ -271,6 +269,8 @@ func (e *DefaultExecutor) executeRequest(ctx context.Context, request *HandlerRe
 		span.SetStatus(codes.Error, "error running before execute")
 		return
 	}
+
+	logger.DebugContext(ctx, fmt.Sprintf("executing %s request", request.HandlerName))
 
 	err = e.store.Transaction(ctx, func(txStore Storer) error {
 		request, err := txStore.HandlerRequests().FindByIDForUpdate(ctx, request.ID, true)
