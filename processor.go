@@ -229,8 +229,6 @@ func (p *DefaultProcessor) processEvent(ctx context.Context, event *Event) {
 		"eventName", event.Name.String(),
 	)
 
-	logger.DebugContext(ctx, fmt.Sprintf("processing %s event", event.Name))
-
 	ctx, event, err := p.beforeProcess(ctx, event)
 	if err != nil {
 		logger.ErrorContext(ctx, "error running before process", Err(err))
@@ -238,6 +236,8 @@ func (p *DefaultProcessor) processEvent(ctx context.Context, event *Event) {
 		span.SetStatus(codes.Error, "error running before process")
 		return
 	}
+
+	logger.DebugContext(ctx, fmt.Sprintf("processing %s event", event.Name))
 
 	metricAttrs := []attribute.KeyValue{
 		attribute.String(p.applyTelemetryPrefix("event.type"), event.Name.String()),
@@ -275,7 +275,6 @@ func (p *DefaultProcessor) processEvent(ctx context.Context, event *Event) {
 				handlerConfig.MaxErrors,
 				handlerConfig.Priority,
 			)
-
 			if err != nil {
 				return fmt.Errorf("new handler request: %w", err)
 			}
