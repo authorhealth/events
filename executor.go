@@ -320,16 +320,15 @@ func (e *DefaultExecutor) executeRequest(ctx context.Context, request *HandlerRe
 				attribute.Int(e.applyTelemetryPrefix("request.errors"), request.Errors),
 			)
 
-			var errorReported bool
 			var stack []byte
+			var handlerPanicErr *HandlerPanicError
+			if errors.As(request.LastError, &handlerPanicErr) {
+				stack = handlerPanicErr.Stack()
+			}
+
+			var errorReported bool
 			if !isRetryable && e.errorReporter != nil {
-				var handlerPanicErr *HandlerPanicError
-				if errors.As(request.LastError, &handlerPanicErr) {
-					errorReported = e.errorReporter.Report(handlerPanicErr, handlerPanicErr.Stack())
-					stack = handlerPanicErr.Stack()
-				} else {
-					errorReported = e.errorReporter.Report(request.LastError, nil)
-				}
+				errorReported = e.errorReporter.Report(request.LastError, stack)
 			}
 
 			var logLevel slog.Level
