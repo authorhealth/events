@@ -122,10 +122,15 @@ func NewDefaultExecutor(
 		option(opts)
 	}
 
+	errorReporter := opts.ErrorReporter
+	if errorReporter == nil {
+		errorReporter = &NoopErrorReporter{}
+	}
+
 	e := &DefaultExecutor{
 		beforeExecuteHook:  beforeExecuteHook,
 		configMap:          conf,
-		errorReporter:      opts.ErrorReporter,
+		errorReporter:      errorReporter,
 		limit:              limit,
 		meter:              otel.GetMeterProvider().Meter("github.com/authorhealth/events/v2"),
 		numExecutorWorkers: numExecutorWorkers,
@@ -341,7 +346,7 @@ func (e *DefaultExecutor) executeRequest(ctx context.Context, request *HandlerRe
 				Err(request.LastError),
 				"lastAttemptAt", request.LastAttemptAt,
 				"errorReported", errorReported,
-				"stack", stack,
+				"stack", string(stack),
 			)
 
 			if !isRetryable {
