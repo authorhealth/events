@@ -37,6 +37,10 @@ func TestHandler_Name_Do_recover_panic(t *testing.T) {
 
 	panicErr := &HandlerPanicError{}
 	err := h.Do(context.Background(), &HandlerRequest{})
-	assert.ErrorAs(err, &panicErr)
-	assert.ErrorContains(err, "recovered panic while executing handler request: danger danger")
+	if assert.ErrorAs(err, &panicErr) {
+		assert.Equal("danger danger", panicErr.panicMsg)
+		assert.NotEmpty(panicErr.stack)
+	}
+
+	assert.EqualError(err, "recovered panic while executing handler request: danger danger")
 }

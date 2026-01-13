@@ -78,6 +78,109 @@ func TestDefaultExecutor_executeRequests(t *testing.T) {
 	e.executeRequests(context.Background())
 }
 
+func TestDefaultExecutor_executeRequests_with_error_reporter(t *testing.T) {
+	testCases := map[string]struct {
+		err                       error
+		maxErrors                 int
+		expectErrorReporterCalled bool
+		expectedStack             []byte
+	}{
+		"handler error - retryable": {
+			err:       errors.New("handler error"),
+			maxErrors: defaultMaxErrors,
+		},
+		"handler panic error - retryable": {
+			err:       NewHandlerPanicError("handler panic", []byte("the stack")),
+			maxErrors: defaultMaxErrors,
+		},
+		"handler error - not retryable": {
+			err:                       errors.New("handler error"),
+			maxErrors:                 1,
+			expectErrorReporterCalled: true,
+		},
+		"handler panic error - not retryable": {
+			err:                       NewHandlerPanicError("handler panic", []byte("the stack")),
+			maxErrors:                 1,
+			expectErrorReporterCalled: true,
+			expectedStack:             []byte("the stack"),
+		},
+	}
+
+	for name, testCase := range testCases {
+		t.Run(name, func(t *testing.T) {
+			assert := assert.New(t)
+
+			limit := 5
+
+			fooUpdatedEvent, err := NewApplicationEvent(fooUpdatedEventName, map[string]any{"key": "val"})
+			assert.NoError(err)
+
+			fooUpdatedHandlerRequest, err := NewHandlerRequest(fooUpdatedEvent, fooUpdatedHandlerName, testCase.maxErrors, defaultPriority)
+			assert.NoError(err)
+
+			barUpdatedEvent, err := NewDomainEvent(barUpdatedEventName, uuid.New().String(), "bar", map[string]any{"key": "val"})
+			assert.NoError(err)
+
+			barUpdatedHandlerRequest, err := NewHandlerRequest(barUpdatedEvent, barUpdatedHandlerName, testCase.maxErrors, defaultPriority)
+			assert.NoError(err)
+
+			requests := []*HandlerRequest{
+				fooUpdatedHandlerRequest,
+				barUpdatedHandlerRequest,
+			}
+
+			txHandlerRequestRepo := NewMockHandlerRequestRepository(t)
+			txHandlerRequestRepo.EXPECT().FindByIDForUpdate(ctxMatcher, fooUpdatedHandlerRequest.ID, true).Return(fooUpdatedHandlerRequest, nil).Once()
+			txHandlerRequestRepo.EXPECT().FindByIDForUpdate(ctxMatcher, barUpdatedHandlerRequest.ID, true).Return(barUpdatedHandlerRequest, nil).Once()
+			txHandlerRequestRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(r *HandlerRequest) bool {
+				return r.ID == fooUpdatedHandlerRequest.ID &&
+					assert.NotNil(r.CompletedAt)
+			})).Return(nil).Once()
+			txHandlerRequestRepo.EXPECT().Update(ctxMatcher, mock.MatchedBy(func(r *HandlerRequest) bool {
+				return r.ID == barUpdatedHandlerRequest.ID &&
+					assert.Nil(r.CompletedAt) &&
+					assert.Error(r.LastError)
+			})).Return(nil).Once()
+
+			txStore := NewMockStorer(t)
+			txStore.EXPECT().HandlerRequests().Return(txHandlerRequestRepo)
+
+			handlerRequestRepo := NewMockHandlerRequestRepository(t)
+			handlerRequestRepo.EXPECT().FindUnexecuted(ctxMatcher, limit).Return(requests, nil).Once()
+			handlerRequestRepo.EXPECT().FindUnexecuted(ctxMatcher, limit).Return([]*HandlerRequest{}, nil).Maybe()
+
+			store := NewMockStorer(t)
+			store.EXPECT().HandlerRequests().Return(handlerRequestRepo)
+			store.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.Storer) error")).RunAndReturn(func(ctx context.Context, f func(Storer) error) error {
+				return f(txStore)
+			})
+
+			fooUpdatedHandler := NewHandler(fooUpdatedHandlerName, "", func(ctx context.Context, r *HandlerRequest) error {
+				return nil
+			})
+
+			barUpdatedHandler := NewHandler(barUpdatedHandlerName, "", func(ctx context.Context, r *HandlerRequest) error {
+				return testCase.err
+			})
+
+			eventMap := NewConfigMap(
+				WithEvent(fooUpdatedEventName, WithHandler(fooUpdatedHandler)),
+				WithEvent(barUpdatedEventName, WithHandler(barUpdatedHandler)),
+			)
+
+			errorReporter := NewMockErrorReporter(t)
+			if testCase.expectErrorReporterCalled {
+				errorReporter.EXPECT().Report(testCase.err, testCase.expectedStack).Return(true)
+			}
+
+			e, err := NewDefaultExecutor(store, eventMap, nil, "", 2, limit, WithErrorReporter(errorReporter))
+			assert.NoError(err)
+
+			e.executeRequests(context.Background())
+		})
+	}
+}
+
 func TestDefaultExecutor_executeRequests_not_found(t *testing.T) {
 	assert := assert.New(t)
 
