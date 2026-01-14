@@ -10,7 +10,7 @@
 - **Event Processing**: A `Processor` component handles the initial processing of raw events, creating handler requests based on configured mappings.
 - **Handler Execution**: `Executor` components manage the concurrent execution of handler requests. Includes configurable worker pools and an exponential backoff strategy with jitter for retries.
 - **Flexible Scheduling**: Choose between `CooperativeScheduler` (sequential processing and execution) and `ConcurrentScheduler` (parallel processing and execution) to optimize for different workloads.
-- **Observability**: Deep integration with OpenTelemetry for metrics and tracing, providing insights into event processing times, execution counts, and request states.
+- **Observability**: Deep integration with OpenTelemetry for metrics and tracing, providing insights into event processing times, execution counts, and request states, and optional integration with external error reporting services.
 - **Structured Logging**: Uses `log/slog` for structured logging throughout the framework, enhancing debuggability.
 
 ## Getting Started
@@ -118,6 +118,44 @@ The framework leverages OpenTelemetry for comprehensive observability:
 - **Metrics**: Custom metrics are emitted for event processing successes/failures, processing times, request execution times, and counts of unprocessed, unexecuted, and dead requests.
 - **Tracing**: Spans are automatically created and linked for event processing and handler execution, allowing end-to-end tracing of event flow through the system.
 - **Logging**: Structured logging using `log/slog` provides detailed operational insights.
+
+### Custom Error Reporting
+
+For non-retryable errors or panics within event handlers, you can integrate an external reporting service (e.g., Sentry, BugSnag). To do this, implement the `ErrorReporter` interface and provide it to the `DefaultExecutor` during initialization.
+
+The `ErrorReporter` interface is defined as:
+
+```go
+type ErrorReporter interface {
+	Report(err error, stack []byte) bool
+}
+```
+
+-   `err`: The error that occurred.
+-   `stack`: The stack trace if the error was caused by a panic (otherwise `nil`).
+-   Return `true` if the error was successfully reported.
+
+**Example:**
+```go
+// 1. Implement the interface
+type myErrorReporter struct{}
+func (r *myErrorReporter) Report(err error, stack []byte) bool {
+    // Send to your error reporting service
+    log.Printf("error reported: %v", err)
+    return true
+}
+
+// 2. Add it as an option to the executor
+eventExecutor, err := events.NewDefaultExecutor(
+    store,
+    configMap,
+    nil,
+    "demo",
+    5,
+    50,
+    events.WithErrorReporter(&myErrorReporter{}),
+)
+```
 
 ## Testing
 

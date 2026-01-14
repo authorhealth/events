@@ -69,6 +69,7 @@ type DefaultExecutor struct {
 	beforeExecuteHook          BeforeExecuteHook
 	configMap                  ConfigMap
 	deadCountGauge             metric.Int64ObservableGauge
+	errorReporter              ErrorReporter
 	failureCounter             metric.Int64Counter
 	limit                      int
 	meter                      metric.Meter
@@ -110,14 +111,26 @@ func NewDefaultExecutor(
 	telemetryPrefix string,
 	numExecutorWorkers int,
 	limit int,
+	options ...DefaultExecutorOption,
 ) (*DefaultExecutor, error) {
 	if numExecutorWorkers <= 0 {
 		numExecutorWorkers = defaultNumExecutorWorkers
 	}
 
+	opts := &DefaultExecutorOptions{}
+	for _, option := range options {
+		option(opts)
+	}
+
+	errorReporter := opts.ErrorReporter
+	if errorReporter == nil {
+		errorReporter = &NoopErrorReporter{}
+	}
+
 	e := &DefaultExecutor{
 		beforeExecuteHook:  beforeExecuteHook,
 		configMap:          conf,
+		errorReporter:      errorReporter,
 		limit:              limit,
 		meter:              otel.GetMeterProvider().Meter("github.com/authorhealth/events/v2"),
 		numExecutorWorkers: numExecutorWorkers,
@@ -301,11 +314,23 @@ func (e *DefaultExecutor) executeRequest(ctx context.Context, request *HandlerRe
 
 		err = request.execute(ctx, config)
 		if err != nil {
-			isRetryable := errors.Is(err, ErrRetryable)
+			isRetryable := errors.Is(err, ErrHandlerRequestRetryable)
 			metricAttrs = append(metricAttrs,
 				attribute.Bool(e.applyTelemetryPrefix("request.retryable"), isRetryable),
 				attribute.Int(e.applyTelemetryPrefix("request.errors"), request.Errors),
 			)
+
+			var stack []byte
+			var handlerPanicErr *HandlerPanicError
+			isPanic := errors.As(request.LastError, &handlerPanicErr)
+			if isPanic {
+				stack = handlerPanicErr.Stack()
+			}
+
+			var errorReported bool
+			if (isPanic || !isRetryable) && e.errorReporter != nil {
+				errorReported = e.errorReporter.Report(request.LastError, stack)
+			}
 
 			var logLevel slog.Level
 			if isRetryable {
@@ -320,6 +345,7 @@ func (e *DefaultExecutor) executeRequest(ctx context.Context, request *HandlerRe
 				"error while executing handler request",
 				Err(request.LastError),
 				"lastAttemptAt", request.LastAttemptAt,
+				"errorReported", errorReported,
 			)
 
 			if !isRetryable {
@@ -426,4 +452,16 @@ func (e *DefaultExecutor) unregisterMeterCallbacks() error {
 	e.meterCallbackRegistrations = nil
 
 	return nil
+}
+
+type DefaultExecutorOptions struct {
+	ErrorReporter ErrorReporter
+}
+
+type DefaultExecutorOption func(*DefaultExecutorOptions)
+
+func WithErrorReporter(errorReporter ErrorReporter) DefaultExecutorOption {
+	return func(opts *DefaultExecutorOptions) {
+		opts.ErrorReporter = errorReporter
+	}
 }
