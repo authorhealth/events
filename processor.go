@@ -19,8 +19,6 @@ const (
 	defaultNumProcessorWorkers = 1
 )
 
-var ErrRetryable = errors.New("event failed to process but is retryable")
-
 // BeforeProcessHook is a function that is called before an event is processed.
 // It can be used to modify the given context or event before it is processed.
 // If an error is returned, the event will not be processed.

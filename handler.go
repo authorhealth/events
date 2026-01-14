@@ -23,12 +23,12 @@ func (n HandlerName) String() string {
 
 type HandlerPanicError struct {
 	panicMsg any
-	stack    string
+	stack    []byte
 }
 
 var _ error = (*HandlerPanicError)(nil)
 
-func NewHandlerPanicError(panicMsg any, stack string) *HandlerPanicError {
+func NewHandlerPanicError(panicMsg any, stack []byte) *HandlerPanicError {
 	return &HandlerPanicError{
 		panicMsg: panicMsg,
 		stack:    stack,
@@ -36,10 +36,10 @@ func NewHandlerPanicError(panicMsg any, stack string) *HandlerPanicError {
 }
 
 func (e *HandlerPanicError) Error() string {
-	return fmt.Sprintf("recovered panic while executing handler request: %v\n%s", e.panicMsg, e.stack)
+	return fmt.Sprintf("recovered panic while executing handler request: %v", e.panicMsg)
 }
 
-func (e *HandlerPanicError) Stack() string {
+func (e *HandlerPanicError) Stack() []byte {
 	return e.stack
 }
 
@@ -102,7 +102,7 @@ func (h *Handler) Do(ctx context.Context, request *HandlerRequest) (err error) {
 
 	defer func() {
 		if rvr := recover(); rvr != nil {
-			err = NewHandlerPanicError(rvr, string(debug.Stack()))
+			err = NewHandlerPanicError(rvr, debug.Stack())
 			span.SetAttributes(attribute.String(h.applyTelemetryPrefix("request.event.panic"), fmt.Sprintf("%v", rvr)))
 			span.SetStatus(codes.Error, "recovered panic while executing handler request")
 		}

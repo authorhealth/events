@@ -8,6 +8,8 @@ import (
 	"github.com/google/uuid"
 )
 
+var ErrHandlerRequestRetryable = errors.New("handler request failed to execute but is retryable")
+
 type HandlerRequest struct {
 	ID              string         // The request ID.
 	BackoffUntil    *time.Time     // The time at which execution should be tried again.
@@ -95,7 +97,7 @@ func (r *HandlerRequest) execute(ctx context.Context, config *HandlerConfig) err
 
 			r.BackoffUntil = &backoffUntil
 
-			return ErrRetryable
+			return ErrHandlerRequestRetryable
 		}
 
 		r.BackoffUntil = nil

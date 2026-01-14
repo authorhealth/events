@@ -1,8 +1,11 @@
 package events
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -76,6 +79,142 @@ func TestDefaultExecutor_executeRequests(t *testing.T) {
 	assert.NoError(err)
 
 	e.executeRequests(context.Background())
+}
+
+func TestDefaultExecutor_executeRequests_error_reporting(t *testing.T) {
+	testCases := map[string]struct {
+		err                   error
+		maxErrors             int
+		reporter              func(t *testing.T, err error) ErrorReporter
+		expectedLogLevel      slog.Level
+		expectedErrorReported bool
+	}{
+		"noop error reporter - handler error - retryable": {
+			err:              errors.New("handler error"),
+			maxErrors:        2,
+			expectedLogLevel: slog.LevelWarn,
+		},
+		"noop error reporter - handler panic error - retryable": {
+			err:              NewHandlerPanicError("handler panic", []byte("the stack")),
+			maxErrors:        2,
+			expectedLogLevel: slog.LevelWarn,
+		},
+		"noop error reporter - handler error - not retryable": {
+			err:              errors.New("handler error"),
+			maxErrors:        1,
+			expectedLogLevel: slog.LevelError,
+		},
+		"noop error reporter - handler panic error - not retryable": {
+			err:              NewHandlerPanicError("handler panic", []byte("the stack")),
+			maxErrors:        1,
+			expectedLogLevel: slog.LevelError,
+		},
+		"custom error reporter - handler error - retryable": {
+			err:       errors.New("handler error"),
+			maxErrors: 2,
+			reporter: func(t *testing.T, err error) ErrorReporter {
+				return NewMockErrorReporter(t)
+			},
+			expectedLogLevel: slog.LevelWarn,
+		},
+		"custom error reporter - handler panic error - retryable": {
+			err:       NewHandlerPanicError("handler panic", []byte("the stack")),
+			maxErrors: 2,
+			reporter: func(t *testing.T, err error) ErrorReporter {
+				reporter := NewMockErrorReporter(t)
+				reporter.EXPECT().Report(err, []byte("the stack")).Return(true)
+				return reporter
+			},
+			expectedLogLevel:      slog.LevelWarn,
+			expectedErrorReported: true,
+		},
+		"custom error reporter - handler error - not retryable": {
+			err:       errors.New("handler error"),
+			maxErrors: 1,
+			reporter: func(t *testing.T, err error) ErrorReporter {
+				reporter := NewMockErrorReporter(t)
+				reporter.EXPECT().Report(err, []byte(nil)).Return(true)
+				return reporter
+			},
+			expectedLogLevel:      slog.LevelError,
+			expectedErrorReported: true,
+		},
+		"custom error reporter - handler panic error - not retryable": {
+			err:       NewHandlerPanicError("handler panic", []byte("the stack")),
+			maxErrors: 1,
+			reporter: func(t *testing.T, err error) ErrorReporter {
+				reporter := NewMockErrorReporter(t)
+				reporter.EXPECT().Report(err, []byte("the stack")).Return(true)
+				return reporter
+			},
+			expectedLogLevel:      slog.LevelError,
+			expectedErrorReported: true,
+		},
+	}
+	for name, testCase := range testCases {
+		t.Run(name, func(t *testing.T) {
+			assert := assert.New(t)
+
+			var logBuffer bytes.Buffer
+			originalLogger := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuffer, nil)))
+			t.Cleanup(func() {
+				slog.SetDefault(originalLogger)
+			})
+
+			limit := 5
+
+			event, err := NewDomainEvent(barUpdatedEventName, uuid.New().String(), "bar", map[string]any{"key": "val"})
+			assert.NoError(err)
+
+			handlerRequest, err := NewHandlerRequest(event, barUpdatedHandlerName, testCase.maxErrors, defaultPriority)
+			assert.NoError(err)
+
+			requests := []*HandlerRequest{handlerRequest}
+
+			txHandlerRequestRepo := NewMockHandlerRequestRepository(t)
+			txHandlerRequestRepo.EXPECT().FindByIDForUpdate(ctxMatcher, handlerRequest.ID, true).Return(handlerRequest, nil).Once()
+			txHandlerRequestRepo.EXPECT().Update(ctxMatcher, mock.AnythingOfType("*events.HandlerRequest")).Return(nil).Once()
+
+			txStore := NewMockStorer(t)
+			txStore.EXPECT().HandlerRequests().Return(txHandlerRequestRepo)
+
+			handlerRequestRepo := NewMockHandlerRequestRepository(t)
+			handlerRequestRepo.EXPECT().FindUnexecuted(ctxMatcher, limit).Return(requests, nil).Once()
+			handlerRequestRepo.EXPECT().FindUnexecuted(ctxMatcher, limit).Return([]*HandlerRequest{}, nil).Maybe()
+
+			store := NewMockStorer(t)
+			store.EXPECT().HandlerRequests().Return(handlerRequestRepo)
+			store.EXPECT().Transaction(ctxMatcher, mock.AnythingOfType("func(events.Storer) error")).RunAndReturn(func(ctx context.Context, f func(Storer) error) error {
+				return f(txStore)
+			})
+
+			handler := NewHandler(barUpdatedHandlerName, "", func(ctx context.Context, r *HandlerRequest) error { return testCase.err })
+			eventMap := NewConfigMap(
+				WithEvent(barUpdatedEventName, WithHandler(handler)),
+			)
+
+			var reporter ErrorReporter
+			if testCase.reporter != nil {
+				reporter = testCase.reporter(t, testCase.err)
+			}
+
+			e, err := NewDefaultExecutor(store, eventMap, nil, "", 2, limit, WithErrorReporter(reporter))
+			assert.NoError(err)
+
+			e.executeRequests(context.Background())
+
+			var logEntry map[string]any
+			err = json.Unmarshal(logBuffer.Bytes(), &logEntry)
+			if assert.NoError(err) {
+				assert.Equal(testCase.expectedLogLevel.String(), logEntry["level"])
+				assert.Equal("error while executing handler request", logEntry["msg"])
+				assert.Equal(testCase.err.Error(), logEntry["error"])
+				assert.NotEmpty(logEntry["lastAttemptAt"])
+				assert.Equal(testCase.expectedErrorReported, logEntry["errorReported"])
+			}
+		})
+	}
 }
 
 func TestDefaultExecutor_executeRequests_not_found(t *testing.T) {
