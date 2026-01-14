@@ -322,12 +322,13 @@ func (e *DefaultExecutor) executeRequest(ctx context.Context, request *HandlerRe
 
 			var stack []byte
 			var handlerPanicErr *HandlerPanicError
-			if errors.As(request.LastError, &handlerPanicErr) {
+			isPanic := errors.As(request.LastError, &handlerPanicErr)
+			if isPanic {
 				stack = handlerPanicErr.Stack()
 			}
 
 			var errorReported bool
-			if !isRetryable && e.errorReporter != nil {
+			if (isPanic || !isRetryable) && e.errorReporter != nil {
 				errorReported = e.errorReporter.Report(request.LastError, stack)
 			}
 

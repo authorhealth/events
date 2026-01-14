@@ -124,10 +124,13 @@ func TestDefaultExecutor_executeRequests_error_reporting(t *testing.T) {
 			err:       NewHandlerPanicError("handler panic", []byte("the stack")),
 			maxErrors: 2,
 			reporter: func(t *testing.T, err error, stack []byte) ErrorReporter {
-				return NewMockErrorReporter(t)
+				reporter := NewMockErrorReporter(t)
+				reporter.EXPECT().Report(err, stack).Return(true)
+				return reporter
 			},
-			expectedLogLevel: slog.LevelWarn,
-			expectedStack:    []byte("the stack"),
+			expectedLogLevel:      slog.LevelWarn,
+			expectedErrorReported: true,
+			expectedStack:         []byte("the stack"),
 		},
 		"custom error reporter - handler error - not retryable": {
 			err:       errors.New("handler error"),
