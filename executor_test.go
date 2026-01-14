@@ -85,10 +85,9 @@ func TestDefaultExecutor_executeRequests_error_reporting(t *testing.T) {
 	testCases := map[string]struct {
 		err                   error
 		maxErrors             int
-		reporter              func(t *testing.T, err error, stack []byte) ErrorReporter
+		reporter              func(t *testing.T, err error) ErrorReporter
 		expectedLogLevel      slog.Level
 		expectedErrorReported bool
-		expectedStack         []byte
 	}{
 		"noop error reporter - handler error - retryable": {
 			err:              errors.New("handler error"),
@@ -98,7 +97,6 @@ func TestDefaultExecutor_executeRequests_error_reporting(t *testing.T) {
 		"noop error reporter - handler panic error - retryable": {
 			err:              NewHandlerPanicError("handler panic", []byte("the stack")),
 			maxErrors:        2,
-			expectedStack:    []byte("the stack"),
 			expectedLogLevel: slog.LevelWarn,
 		},
 		"noop error reporter - handler error - not retryable": {
@@ -110,12 +108,11 @@ func TestDefaultExecutor_executeRequests_error_reporting(t *testing.T) {
 			err:              NewHandlerPanicError("handler panic", []byte("the stack")),
 			maxErrors:        1,
 			expectedLogLevel: slog.LevelError,
-			expectedStack:    []byte("the stack"),
 		},
 		"custom error reporter - handler error - retryable": {
 			err:       errors.New("handler error"),
 			maxErrors: 2,
-			reporter: func(t *testing.T, err error, stack []byte) ErrorReporter {
+			reporter: func(t *testing.T, err error) ErrorReporter {
 				return NewMockErrorReporter(t)
 			},
 			expectedLogLevel: slog.LevelWarn,
@@ -123,21 +120,20 @@ func TestDefaultExecutor_executeRequests_error_reporting(t *testing.T) {
 		"custom error reporter - handler panic error - retryable": {
 			err:       NewHandlerPanicError("handler panic", []byte("the stack")),
 			maxErrors: 2,
-			reporter: func(t *testing.T, err error, stack []byte) ErrorReporter {
+			reporter: func(t *testing.T, err error) ErrorReporter {
 				reporter := NewMockErrorReporter(t)
-				reporter.EXPECT().Report(err, stack).Return(true)
+				reporter.EXPECT().Report(err, []byte("the stack")).Return(true)
 				return reporter
 			},
 			expectedLogLevel:      slog.LevelWarn,
 			expectedErrorReported: true,
-			expectedStack:         []byte("the stack"),
 		},
 		"custom error reporter - handler error - not retryable": {
 			err:       errors.New("handler error"),
 			maxErrors: 1,
-			reporter: func(t *testing.T, err error, stack []byte) ErrorReporter {
+			reporter: func(t *testing.T, err error) ErrorReporter {
 				reporter := NewMockErrorReporter(t)
-				reporter.EXPECT().Report(err, stack).Return(true)
+				reporter.EXPECT().Report(err, []byte(nil)).Return(true)
 				return reporter
 			},
 			expectedLogLevel:      slog.LevelError,
@@ -146,14 +142,13 @@ func TestDefaultExecutor_executeRequests_error_reporting(t *testing.T) {
 		"custom error reporter - handler panic error - not retryable": {
 			err:       NewHandlerPanicError("handler panic", []byte("the stack")),
 			maxErrors: 1,
-			reporter: func(t *testing.T, err error, stack []byte) ErrorReporter {
+			reporter: func(t *testing.T, err error) ErrorReporter {
 				reporter := NewMockErrorReporter(t)
-				reporter.EXPECT().Report(err, stack).Return(true)
+				reporter.EXPECT().Report(err, []byte("the stack")).Return(true)
 				return reporter
 			},
 			expectedLogLevel:      slog.LevelError,
 			expectedErrorReported: true,
-			expectedStack:         []byte("the stack"),
 		},
 	}
 	for name, testCase := range testCases {
@@ -201,7 +196,7 @@ func TestDefaultExecutor_executeRequests_error_reporting(t *testing.T) {
 
 			var reporter ErrorReporter
 			if testCase.reporter != nil {
-				reporter = testCase.reporter(t, testCase.err, testCase.expectedStack)
+				reporter = testCase.reporter(t, testCase.err)
 			}
 
 			e, err := NewDefaultExecutor(store, eventMap, nil, "", 2, limit, WithErrorReporter(reporter))
@@ -217,7 +212,6 @@ func TestDefaultExecutor_executeRequests_error_reporting(t *testing.T) {
 				assert.Equal(testCase.err.Error(), logEntry["error"])
 				assert.NotEmpty(logEntry["lastAttemptAt"])
 				assert.Equal(testCase.expectedErrorReported, logEntry["errorReported"])
-				assert.Equal(string(testCase.expectedStack), logEntry["stack"])
 			}
 		})
 	}

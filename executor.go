@@ -346,7 +346,6 @@ func (e *DefaultExecutor) executeRequest(ctx context.Context, request *HandlerRe
 				Err(request.LastError),
 				"lastAttemptAt", request.LastAttemptAt,
 				"errorReported", errorReported,
-				"stack", string(stack),
 			)
 
 			if !isRetryable {
