@@ -283,49 +283,53 @@ type HandlerRequestRepository struct {
 
 var _ events.HandlerRequestRepository = (*HandlerRequestRepository)(nil)
 
-func (r *HandlerRequestRepository) findDead(filters ...events.DeadHandlerRequestFilter) []*events.HandlerRequest {
-	r.db.handlerRequestTableMutex.RLock()
-	defer r.db.handlerRequestTableMutex.RUnlock()
+func (r *HandlerRequestRepository) findDead(filters ...events.DeadHandlerRequestFilter) iter.Seq[*events.HandlerRequest] {
+	return func(yield func(*events.HandlerRequest) bool) {
+		r.db.handlerRequestTableMutex.RLock()
+		defer r.db.handlerRequestTableMutex.RUnlock()
 
-	opts := &events.FindDeadOptions{}
-	for _, filter := range filters {
-		filter(opts)
+		opts := &events.FindDeadOptions{}
+		for _, filter := range filters {
+			filter(opts)
+		}
+
+		for _, row := range r.db.handlerRequestTable {
+			if row.handlerRequest.CompletedAt != nil {
+				continue
+			}
+
+			if row.handlerRequest.CanceledAt != nil {
+				continue
+			}
+
+			if row.handlerRequest.Errors < row.handlerRequest.MaxErrors {
+				continue
+			}
+
+			if len(opts.EventNames) > 0 && !slices.Contains(opts.EventNames, row.handlerRequest.EventName) {
+				continue
+			}
+
+			if len(opts.HandlerNames) > 0 && !slices.Contains(opts.HandlerNames, row.handlerRequest.HandlerName) {
+				continue
+			}
+
+			if !yield(row.handlerRequest) {
+				return
+			}
+		}
 	}
-
-	var deadHandlerRequests []*events.HandlerRequest
-	for _, row := range r.db.handlerRequestTable {
-		if row.handlerRequest.CompletedAt != nil {
-			continue
-		}
-
-		if row.handlerRequest.CanceledAt != nil {
-			continue
-		}
-
-		if row.handlerRequest.Errors < row.handlerRequest.MaxErrors {
-			continue
-		}
-
-		if len(opts.EventNames) > 0 && !slices.Contains(opts.EventNames, row.handlerRequest.EventName) {
-			continue
-		}
-
-		if len(opts.HandlerNames) > 0 && !slices.Contains(opts.HandlerNames, row.handlerRequest.HandlerName) {
-			continue
-		}
-
-		deadHandlerRequests = append(deadHandlerRequests, row.handlerRequest)
-	}
-
-	return deadHandlerRequests
 }
 
 func (r *HandlerRequestRepository) CountDead(ctx context.Context, filters ...events.DeadHandlerRequestFilter) (int, error) {
 	slog.DebugContext(ctx, "counting dead handler requests")
 
-	deadHandlerRequests := r.findDead(filters...)
+	var count int
+	for range r.findDead(filters...) {
+		count++
+	}
 
-	return len(deadHandlerRequests), nil
+	return count, nil
 }
 
 func (r *HandlerRequestRepository) CountUnexecuted(ctx context.Context) (int, error) {
@@ -429,25 +433,31 @@ func (r *HandlerRequestRepository) FindByIDForUpdate(ctx context.Context, id str
 func (r *HandlerRequestRepository) FindDead(ctx context.Context, limit int, offset int, filters ...events.DeadHandlerRequestFilter) ([]*events.HandlerRequest, error) {
 	slog.DebugContext(ctx, "finding dead handler requests")
 
-	deadHandlerRequests := r.findDead(filters...)
+	var results []*events.HandlerRequest
+	currentOffset := 0
 
-	if offset >= len(deadHandlerRequests) {
-		return nil, nil
+	for req := range r.findDead(filters...) {
+		if currentOffset < offset {
+			currentOffset++
+			continue
+		}
+
+		if len(results) >= limit {
+			break
+		}
+
+		results = append(results, req)
 	}
 
-	end := min(offset+limit, len(deadHandlerRequests))
-
-	return deadHandlerRequests[offset:end], nil
+	return results, nil
 }
 
 func (r *HandlerRequestRepository) FindDeadEventAndHandlerNames(ctx context.Context) ([]events.EventName, []events.HandlerName, error) {
 	slog.DebugContext(ctx, "finding dead event and handler names")
 
-	deadHandlerRequests := r.findDead()
-
 	eventNames := map[events.EventName]struct{}{}
 	handlerNames := map[events.HandlerName]struct{}{}
-	for _, req := range deadHandlerRequests {
+	for req := range r.findDead() {
 		eventNames[req.EventName] = struct{}{}
 		handlerNames[req.HandlerName] = struct{}{}
 	}
