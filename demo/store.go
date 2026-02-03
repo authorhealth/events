@@ -283,13 +283,16 @@ type HandlerRequestRepository struct {
 
 var _ events.HandlerRequestRepository = (*HandlerRequestRepository)(nil)
 
-func (r *HandlerRequestRepository) CountDead(ctx context.Context) (int, error) {
+func (r *HandlerRequestRepository) findDead(filters ...events.DeadHandlerRequestFilter) []*events.HandlerRequest {
 	r.db.handlerRequestTableMutex.RLock()
 	defer r.db.handlerRequestTableMutex.RUnlock()
 
-	slog.DebugContext(ctx, "counting dead handler requests")
+	opts := &events.FindDeadOptions{}
+	for _, filter := range filters {
+		filter(opts)
+	}
 
-	var count int
+	var deadHandlerRequests []*events.HandlerRequest
 	for _, row := range r.db.handlerRequestTable {
 		if row.handlerRequest.CompletedAt != nil {
 			continue
@@ -303,10 +306,26 @@ func (r *HandlerRequestRepository) CountDead(ctx context.Context) (int, error) {
 			continue
 		}
 
-		count++
+		if len(opts.EventNames) > 0 && !slices.Contains(opts.EventNames, row.handlerRequest.EventName) {
+			continue
+		}
+
+		if len(opts.HandlerNames) > 0 && !slices.Contains(opts.HandlerNames, row.handlerRequest.HandlerName) {
+			continue
+		}
+
+		deadHandlerRequests = append(deadHandlerRequests, row.handlerRequest)
 	}
 
-	return count, nil
+	return deadHandlerRequests
+}
+
+func (r *HandlerRequestRepository) CountDead(ctx context.Context, filters ...events.DeadHandlerRequestFilter) (int, error) {
+	slog.DebugContext(ctx, "counting dead handler requests")
+
+	deadHandlerRequests := r.findDead(filters...)
+
+	return len(deadHandlerRequests), nil
 }
 
 func (r *HandlerRequestRepository) CountUnexecuted(ctx context.Context) (int, error) {
@@ -407,28 +426,10 @@ func (r *HandlerRequestRepository) FindByIDForUpdate(ctx context.Context, id str
 	return row.handlerRequest, nil
 }
 
-func (r *HandlerRequestRepository) FindDead(ctx context.Context, limit int, offset int) ([]*events.HandlerRequest, error) {
-	r.db.handlerRequestTableMutex.RLock()
-	defer r.db.handlerRequestTableMutex.RUnlock()
-
+func (r *HandlerRequestRepository) FindDead(ctx context.Context, limit int, offset int, filters ...events.DeadHandlerRequestFilter) ([]*events.HandlerRequest, error) {
 	slog.DebugContext(ctx, "finding dead handler requests")
 
-	var deadHandlerRequests []*events.HandlerRequest
-	for _, row := range r.db.handlerRequestTable {
-		if row.handlerRequest.CompletedAt != nil {
-			continue
-		}
-
-		if row.handlerRequest.CanceledAt != nil {
-			continue
-		}
-
-		if row.handlerRequest.Errors < row.handlerRequest.MaxErrors {
-			continue
-		}
-
-		deadHandlerRequests = append(deadHandlerRequests, row.handlerRequest)
-	}
+	deadHandlerRequests := r.findDead(filters...)
 
 	if offset >= len(deadHandlerRequests) {
 		return nil, nil
@@ -437,6 +438,21 @@ func (r *HandlerRequestRepository) FindDead(ctx context.Context, limit int, offs
 	end := min(offset+limit, len(deadHandlerRequests))
 
 	return deadHandlerRequests[offset:end], nil
+}
+
+func (r *HandlerRequestRepository) FindDeadEventAndHandlerNames(ctx context.Context) ([]events.EventName, []events.HandlerName, error) {
+	slog.DebugContext(ctx, "finding dead event and handler names")
+
+	deadHandlerRequests := r.findDead()
+
+	eventNames := map[events.EventName]struct{}{}
+	handlerNames := map[events.HandlerName]struct{}{}
+	for _, req := range deadHandlerRequests {
+		eventNames[req.EventName] = struct{}{}
+		handlerNames[req.HandlerName] = struct{}{}
+	}
+
+	return slices.Collect(maps.Keys(eventNames)), slices.Collect(maps.Keys(handlerNames)), nil
 }
 
 func (r *HandlerRequestRepository) FindOldestUnexecuted(ctx context.Context) (*events.HandlerRequest, error) {
