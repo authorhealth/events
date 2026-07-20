@@ -19,6 +19,7 @@ type EventRepository interface {
 	CountUnprocessed(ctx context.Context) (int, error)
 	Create(ctx context.Context, event *Event) error
 	Find(ctx context.Context) iter.Seq2[*Event, error]
+	FindByCorrelationID(ctx context.Context, correlationID string) iter.Seq2[*Event, error]
 	FindByID(ctx context.Context, id string) (*Event, error)
 	FindByIDForUpdate(ctx context.Context, id string, skipLocked bool) (*Event, error)
 	FindOldestUnprocessed(ctx context.Context) (*Event, error)
@@ -54,6 +55,7 @@ type HandlerRequestRepository interface {
 	CountUnexecuted(ctx context.Context) (int, error)
 	Create(ctx context.Context, handlerRequest *HandlerRequest) error
 	Find(ctx context.Context) iter.Seq2[*HandlerRequest, error]
+	FindByCorrelationID(ctx context.Context, correlationID string) iter.Seq2[*HandlerRequest, error]
 	FindByID(ctx context.Context, id string) (*HandlerRequest, error)
 	FindByIDForUpdate(ctx context.Context, id string, skipLocked bool) (*HandlerRequest, error)
 	FindDead(ctx context.Context, limit int, offset int, filters ...DeadHandlerRequestFilter) ([]*HandlerRequest, error)
