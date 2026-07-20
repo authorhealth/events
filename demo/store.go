@@ -174,6 +174,27 @@ func (r *EventRepository) Find(ctx context.Context) iter.Seq2[*events.Event, err
 	}
 }
 
+func (r *EventRepository) FindByCorrelationID(ctx context.Context, correlationID string) iter.Seq2[*events.Event, error] {
+	r.db.eventTableMutex.RLock()
+	defer r.db.eventTableMutex.RUnlock()
+
+	slog.DebugContext(ctx, "finding events by correlation ID", "correlationId", correlationID)
+
+	rows := slices.Collect(maps.Values(r.db.eventTable))
+
+	return func(yield func(*events.Event, error) bool) {
+		for _, row := range rows {
+			if row.event.CorrelationID != correlationID {
+				continue
+			}
+
+			if !yield(row.event, nil) {
+				return
+			}
+		}
+	}
+}
+
 func (r *EventRepository) FindByID(ctx context.Context, id string) (*events.Event, error) {
 	r.db.eventTableMutex.RLock()
 	defer r.db.eventTableMutex.RUnlock()
@@ -389,6 +410,27 @@ func (r *HandlerRequestRepository) Find(ctx context.Context) iter.Seq2[*events.H
 
 	return func(yield func(*events.HandlerRequest, error) bool) {
 		for _, row := range rowsCopy {
+			if !yield(row.handlerRequest, nil) {
+				return
+			}
+		}
+	}
+}
+
+func (r *HandlerRequestRepository) FindByCorrelationID(ctx context.Context, correlationID string) iter.Seq2[*events.HandlerRequest, error] {
+	r.db.handlerRequestTableMutex.RLock()
+	defer r.db.handlerRequestTableMutex.RUnlock()
+
+	slog.DebugContext(ctx, "finding handler requests by correlation ID", "correlationId", correlationID)
+
+	rowsCopy := slices.Collect(maps.Values(r.db.handlerRequestTable))
+
+	return func(yield func(*events.HandlerRequest, error) bool) {
+		for _, row := range rowsCopy {
+			if row.handlerRequest.CorrelationID != correlationID {
+				continue
+			}
+
 			if !yield(row.handlerRequest, nil) {
 				return
 			}
