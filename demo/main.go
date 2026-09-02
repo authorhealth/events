@@ -35,7 +35,7 @@ func main() {
 	ctx := context.Background()
 
 	slog.SetDefault(slog.New(
-		tint.NewHandler(os.Stderr, &tint.Options{
+		tint.NewTextHandler(os.Stderr, &tint.Options{
 			// Level:      slog.LevelDebug,
 			TimeFormat: time.TimeOnly,
 		}),

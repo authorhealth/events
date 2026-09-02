@@ -287,7 +287,7 @@ func (p *DefaultProcessor) processEvent(ctx context.Context, event *Event) {
 			}
 		}
 
-		event.ProcessedAt = Ptr(time.Now())
+		event.ProcessedAt = new(time.Now())
 
 		err = txStore.Events().Update(ctx, event)
 		if err != nil {

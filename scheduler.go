@@ -219,10 +219,7 @@ func (s *ConcurrentScheduler) Start(ctx context.Context) error {
 
 	var wg sync.WaitGroup
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-
+	wg.Go(func() {
 		ticker := time.NewTicker(s.interval)
 
 		for {
@@ -236,12 +233,9 @@ func (s *ConcurrentScheduler) Start(ctx context.Context) error {
 				return
 			}
 		}
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-
+	wg.Go(func() {
 		ticker := time.NewTicker(s.interval)
 
 		for {
@@ -255,7 +249,7 @@ func (s *ConcurrentScheduler) Start(ctx context.Context) error {
 				return
 			}
 		}
-	}()
+	})
 
 	wg.Wait()
 
