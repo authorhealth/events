@@ -56,7 +56,7 @@ func NewHandlerRequest(
 }
 
 func (r *HandlerRequest) Cancel() {
-	r.CanceledAt = Ptr(time.Now())
+	r.CanceledAt = new(time.Now())
 }
 
 func (r *HandlerRequest) Reexecute() {
