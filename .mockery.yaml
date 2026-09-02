@@ -7,5 +7,6 @@ packages:
       inpackage: true
       recursive: true
       with-expecter: true
+disable-version-string: True
 resolve-type-alias: false
 issue-845-fix: true
