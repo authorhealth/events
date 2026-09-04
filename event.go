@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/google/uuid"
+	"uuid"
 )
 
 type EventName string
@@ -30,7 +30,7 @@ func NewApplicationEvent(name EventName, data map[string]any) (*Event, error) {
 	}
 
 	return &Event{
-		ID:        uuid.Must(uuid.NewV7()).String(),
+		ID:        uuid.NewV7().String(),
 		Name:      name,
 		Data:      data,
 		Timestamp: time.Now(),
@@ -43,7 +43,7 @@ func NewDomainEvent(name EventName, entityID string, entityName string, data map
 	}
 
 	return &Event{
-		ID:         uuid.Must(uuid.NewV7()).String(),
+		ID:         uuid.NewV7().String(),
 		Name:       EventName(name),
 		EntityID:   entityID,
 		EntityName: entityName,

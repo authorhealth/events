@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/google/uuid"
+	"uuid"
 )
 
 var ErrHandlerRequestRetryable = errors.New("handler request failed to execute but is retryable")
@@ -41,7 +41,7 @@ func NewHandlerRequest(
 	}
 
 	return &HandlerRequest{
-		ID:              uuid.Must(uuid.NewV7()).String(),
+		ID:              uuid.NewV7().String(),
 		CorrelationID:   event.CorrelationID,
 		EventData:       event.Data,
 		EventEntityID:   event.EntityID,
