@@ -11,8 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"uuid"
+
 	"github.com/authorhealth/events/v2"
-	"github.com/google/uuid"
 )
 
 type Database struct {
@@ -148,7 +149,7 @@ func (r *EventRepository) Create(ctx context.Context, event *events.Event) error
 		return errors.New("there is already an event with the same ID in the table")
 	}
 
-	event.CorrelationID = uuid.Must(uuid.NewV7()).String()
+	event.CorrelationID = uuid.NewV7().String()
 
 	r.db.eventTable[event.ID] = &EventTableRow{
 		event: event,
