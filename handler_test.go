@@ -4,8 +4,21 @@ import (
 	"context"
 	"testing"
 
+	"github.com/google/sqlcommenter/go/core"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestSetSQLCommenterTags(t *testing.T) {
+	ctx := setSQLCommenterTags(
+		context.Background(),
+		EventName("userUpdated"),
+		HandlerName("rebuildUserIndex"),
+	)
+
+	assert.Equal(t, "github.com/authorhealth/events/v2", ctx.Value(core.Framework))
+	assert.Equal(t, "userUpdated", ctx.Value(core.Route))
+	assert.Equal(t, "rebuildUserIndex", ctx.Value(core.Action))
+}
 
 func TestHandler_Name_Do(t *testing.T) {
 	assert := assert.New(t)
