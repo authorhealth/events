@@ -145,11 +145,11 @@ func setSQLCommenterTags(
 	eventName EventName,
 	handlerName HandlerName,
 ) context.Context {
-	ctx = context.WithValue(ctx, core.Framework, "github.com/authorhealth/events/v2") //nolint:staticcheck // SA1029: should not use built-in type string as key for value
+	ctx = context.WithValue(ctx, core.Framework, "github.com/authorhealth/events/v2") //nolint:staticcheck // SA1029: sqlcommenter's context keys are strings
 	// sqlcommenter has no event-specific tags, so we represent the event as the
 	// route and the handler as the action.
-	ctx = context.WithValue(ctx, core.Route, eventName.String())    //nolint:staticcheck // SA1029: should not use built-in type string as key for value
-	ctx = context.WithValue(ctx, core.Action, handlerName.String()) //nolint:staticcheck // SA1029: should not use built-in type string as key for value
+	ctx = context.WithValue(ctx, core.Route, eventName.String())    //nolint:staticcheck // SA1029: sqlcommenter's context keys are strings
+	ctx = context.WithValue(ctx, core.Action, handlerName.String()) //nolint:staticcheck // SA1029: sqlcommenter's context keys are strings
 
 	return ctx
 }
