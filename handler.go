@@ -6,6 +6,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/google/sqlcommenter/go/core"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -108,6 +109,8 @@ func (h *Handler) Do(ctx context.Context, request *HandlerRequest) (err error) {
 		}
 	}()
 
+	ctx = setSQLCommenterTags(ctx, request.EventName, h.name)
+
 	metricAttrs := []attribute.KeyValue{
 		attribute.Stringer(h.applyTelemetryPrefix("event_handler.name"), h.name),
 		attribute.Stringer(h.applyTelemetryPrefix("event.type"), request.EventName),
@@ -135,4 +138,18 @@ func (h *Handler) applyTelemetryPrefix(k string) string {
 	}
 
 	return k
+}
+
+func setSQLCommenterTags(
+	ctx context.Context,
+	eventName EventName,
+	handlerName HandlerName,
+) context.Context {
+	ctx = context.WithValue(ctx, core.Framework, "github.com/authorhealth/events/v2")
+	// sqlcommenter has no event-specific tags, so we represent the event as the
+	// route and the handler as the action.
+	ctx = context.WithValue(ctx, core.Route, eventName.String())
+	ctx = context.WithValue(ctx, core.Action, handlerName.String())
+
+	return ctx
 }

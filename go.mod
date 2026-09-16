@@ -3,6 +3,7 @@ module github.com/authorhealth/events/v2
 go 1.27.1
 
 require (
+	github.com/google/sqlcommenter/go/core v0.1.2
 	github.com/lmittmann/tint v1.2.0
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.45.0
