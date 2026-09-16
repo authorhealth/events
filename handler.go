@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/sqlcommenter/go/core"
+	sqlcommenterhttp "github.com/google/sqlcommenter/go/net/http"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -145,11 +146,11 @@ func setSQLCommenterTags(
 	eventName EventName,
 	handlerName HandlerName,
 ) context.Context {
-	ctx = context.WithValue(ctx, core.Framework, "github.com/authorhealth/events/v2") //nolint:staticcheck // SA1029: sqlcommenter's context keys are strings
 	// sqlcommenter has no event-specific tags, so we represent the event as the
 	// route and the handler as the action.
-	ctx = context.WithValue(ctx, core.Route, eventName.String())    //nolint:staticcheck // SA1029: sqlcommenter's context keys are strings
-	ctx = context.WithValue(ctx, core.Action, handlerName.String()) //nolint:staticcheck // SA1029: sqlcommenter's context keys are strings
-
-	return ctx
+	return core.ContextInject(ctx, sqlcommenterhttp.NewHTTPRequestTags(
+		"github.com/authorhealth/events/v2",
+		eventName.String(),
+		handlerName.String(),
+	))
 }
